@@ -735,9 +735,13 @@ function ingest(text, dest) {
 
 /* a spoken-length summary of the day, for a Siri shortcut to read back */
 function todayBrief() {
-  const k = iso(new Date()), D = S.days[k] || { tasks: [] }, wk = isoWeek(new Date());
+  const k = iso(new Date()), D = S.days[k] || { tasks: [], intent: '', anchor: null }, wk = isoWeek(new Date());
   const W = S.weeks[weekKey(wk.y, wk.w)] || {};
   const L = [];
+  if ((D.intent || '').trim() || D.anchor) {
+    const at = anchorText(D.anchor);
+    L.push('Intention: ' + ((D.intent || '').trim() || 'unwritten') + (at ? ', held against ' + at : '') + '.');
+  }
   if (W.focus) L.push('This week: ' + W.focus.split('\n')[0] + '.');
   const open = (D.tasks || []).filter(t => !t.d && t.t.trim());
   L.push(open.length ? 'Today: ' + open.map(t => t.t).join('; ') + '.' : 'Nothing on today\'s list yet.');
@@ -785,7 +789,9 @@ function week(y, w) {
   return S.weeks[k] = S.weeks[k] || { focus: '', feel: '', grat: [], goals: [], todos: [], notes: '', wins: [], rate: null };
 }
 function day(d) {
-  return S.days[d] = S.days[d] || { note: '', tasks: [] };
+  const r = S.days[d] = S.days[d] || { intent: '', anchor: null, note: '', tasks: [] };
+  if (r.intent === undefined) r.intent = '';
+  return r;
 }
 function month(y, m) {
   const k = monthKey(y, m);
@@ -809,6 +815,52 @@ function viewToday() {
       E('div', { cls: 'sub', text: left + ' days left in ' + YEAR })
     ])
   ]));
+
+  const ic = E('div', { cls: 'card on' });
+  ic.append(E('label', { cls: 'fl', text: "Today's intention" }));
+  const it = E('textarea', {
+    rows: 1, placeholder: 'What is today for?',
+    style: 'font-family:var(--disp);font-size:21px;line-height:1.15;letter-spacing:.01em;border-bottom:0;padding:2px 0',
+    oninput: e => { grow(e.target); D.intent = e.target.value; save(); }
+  });
+  it.value = D.intent || '';
+  requestAnimationFrame(() => grow(it));
+  ic.append(it);
+  if (!(D.intent || '').trim()) {
+    const y = S.days[iso(addDays(new Date(), -1))];
+    if (y && (y.intent || '').trim()) ic.append(E('button', { cls: 'btn ghost', style: 'margin-top:4px;font-size:11px',
+      text: 'Carry over: ' + y.intent.slice(0, 32), onclick: () => { D.intent = y.intent; D.anchor = y.anchor || null; save(); render(); } }));
+  }
+
+  /* optional anchor: a practice, a goal, a milestone, or your own words */
+  ic.append(E('div', { style: 'margin-top:12px' }, [E('label', { cls: 'fl', text: 'Held against' }), anchorPicker(D, render)]));
+
+  const ai = anchorInfo(D.anchor);
+  if (ai) {
+    const box = E('div', { style: `margin-top:12px;padding:11px 12px;border-left:3px solid ${ai.hex};background:var(--paper);border-radius:2px` });
+    box.append(E('div', { style: `font-family:var(--disp);font-size:13px;letter-spacing:.1em;text-transform:uppercase;font-weight:700;color:${ai.hex}`, text: ai.label }));
+    box.append(E('p', { cls: 'lede', style: 'margin:4px 0 0', text: ai.sub }));
+    if (ai.practice) {
+      const marked = limbDay(k).marks[ai.practice.id];
+      box.append(E('div', { cls: 'btnrow' }, [
+        E('button', { cls: 'btn' + (marked === 'up' ? ' fill' : ''), style: marked === 'up' ? `background:${ai.hex};border-color:${ai.hex}` : '',
+          text: 'Upheld', onclick: () => setMark(k, ai.practice.id, 'up') }),
+        E('button', { cls: 'btn', style: marked === 'slip' ? `background:${ai.hex}44;border-color:${ai.hex}` : '',
+          text: 'Slipped', onclick: () => setMark(k, ai.practice.id, 'slip') })
+      ]));
+    } else if (ai.ms) {
+      box.append(E('div', { cls: 'btnrow' }, [
+        E('button', { cls: 'btn' + (ai.ms.d ? ' fill' : ''), text: ai.ms.d ? 'Reached' : 'Mark reached',
+          onclick: () => { ai.ms.d = !ai.ms.d; save(); render(); } }),
+        E('button', { cls: 'btn', text: 'Open goal', onclick: () => go('goals', null, ai.goal.id) })
+      ]));
+    } else if (ai.goal) {
+      box.append(E('div', { cls: 'bar' }, E('i', { style: 'width:' + goalProgress(ai.goal) + '%' })));
+      box.append(E('button', { cls: 'btn ghost', style: 'margin-top:8px', text: 'Open goal', onclick: () => go('goals', null, ai.goal.id) }));
+    }
+    ic.append(box);
+  }
+  v.append(ic);
 
   const blank = !S.goals.length && !S.habits.length && !(S.f.purpose || S.f.values || S.f.success);
   if (blank) {
@@ -1017,6 +1069,15 @@ function viewWeek() {
       body.append(E('div', { style: 'display:flex;gap:6px;align-items:center;margin-bottom:4px' }, [
         limbsEngaged(dk) ? E('div', { style: 'flex:1;max-width:120px' }, limbSpectrum(dk, 5)) : null,
         entriesFor(dk).length ? E('span', { cls: 'pct', style: 'color:#C6337E', text: 'studio' }) : null
+      ]));
+    }
+    if ((D.intent || '').trim() || D.anchor) {
+      const ai2 = anchorInfo(D.anchor);
+      body.append(E('div', { style: 'margin-bottom:2px' }, [
+        (D.intent || '').trim() ? E('span', {
+          style: 'font-family:var(--disp);font-size:13px;letter-spacing:.06em;text-transform:uppercase;color:var(--acc)',
+          text: D.intent }) : null,
+        ai2 ? E('span', { style: `font-family:var(--disp);font-size:10px;letter-spacing:.1em;text-transform:uppercase;color:${ai2.hex};margin-left:7px`, text: ai2.label }) : null
       ]));
     }
     body.append(bindArea(D, 'note', isToday ? 'Today…' : ''));
@@ -1927,8 +1988,10 @@ function toMarkdown() {
     const days = [];
     for (let i = 0; i < 7; i++) {
       const dk = iso(addDays(mon, i)), D = S.days[dk];
-      if (D && ((D.note || '').trim() || D.tasks.length)) {
-        days.push('- **' + DOW[i] + ' ' + dk + '** ' + (D.note || '').trim().replace(/\n/g, ' ') +
+      if (D && ((D.note || '').trim() || (D.intent || '').trim() || D.anchor || D.tasks.length)) {
+        days.push('- **' + DOW[i] + ' ' + dk + '** ' +
+          ((D.intent || '').trim() ? '_' + D.intent.trim() + '_' + (anchorText(D.anchor) ? ' [' + anchorText(D.anchor) + ']' : '') + ' — ' : '') +
+          (D.note || '').trim().replace(/\n/g, ' ') +
           D.tasks.filter(t => t.t).map(t => '\n    - [' + (t.d ? 'x' : ' ') + '] ' + t.t).join(''));
       }
     }
@@ -2530,19 +2593,6 @@ function exegesisMarkdown() {
 }
 
 
-/* ===================== boot ===================== */
-window.addEventListener('beforeunload', () => save(true));
-document.addEventListener('visibilitychange', () => {
-  if (!document.hidden) return;
-  save(true);
-  if (S.cfg.auto && S.cfg.token && S.cfg.gist && dirty) cloudPush();
-});
-render();
-if (S.cfg.auto && S.cfg.token && S.cfg.gist) {
-  cloudPull('merge').then(ok => { if (ok) render(); });
-}
-
-
 /* ===================== syncing across devices ===================== */
 /* A private gist is the shared copy. No server, no account beyond the one
    already hosting this file. The token lives only in this browser. */
@@ -2872,6 +2922,161 @@ function pageSources() {
     v.append(ac);
   }
   return v;
+}
+
+
+/* ===================== anchoring the day's intention ===================== */
+/* an anchor is {k:'p'|'g'|'m', id, gid} — a practice, a goal, or a milestone */
+
+function anchorOptions() {
+  const groups = [];
+  const pr = { label: 'Practice', items: [] };
+  LIMBS.forEach(l => l.practices.forEach(p => pr.items.push({
+    v: 'p:' + p.id, t: l.sanskrit + ' · ' + p.name.replace(/ ·.*$/, '')
+  })));
+  groups.push(pr);
+  const open = S.goals.filter(g => !g.completed);
+  if (open.length) {
+    groups.push({ label: 'Goals', items: open.map(g => ({ v: 'g:' + g.id, t: g.title || 'Untitled goal' })) });
+    const ms = [];
+    open.forEach(g => (g.milestones || []).forEach(m => {
+      if (m.d) return;
+      if (!m.id) m.id = uid();
+      ms.push({ v: 'm:' + g.id + ':' + m.id, t: (m.t || 'Milestone') + ' — ' + (g.title || 'goal') });
+    }));
+    if (ms.length) groups.push({ label: 'Milestones', items: ms });
+  }
+  return groups;
+}
+function parseAnchor(v) {
+  if (!v) return null;
+  const b = v.split(':');
+  if (b[0] === 'p') return { k: 'p', id: b[1] };
+  if (b[0] === 'g') return { k: 'g', id: b[1] };
+  if (b[0] === 'm') return { k: 'm', gid: b[1], id: b[2] };
+  return null;
+}
+function anchorValue(a) {
+  if (!a) return '';
+  return a.k === 'm' ? 'm:' + a.gid + ':' + a.id : a.k + ':' + a.id;
+}
+function anchorInfo(a) {
+  if (!a) return null;
+  if (a.k === 'c') return { label: a.label, sub: 'Your own anchor', hex: 'hsl(var(--hue),68%,44%)' };
+  if (a.k === 'p') {
+    const p = PBYID[a.id];
+    if (!p) return null;
+    return { label: p.limb.sanskrit + ' · ' + p.name.replace(/^[^·]*· /, ''), sub: p.prompt, hex: p.limb.hue, practice: p };
+  }
+  if (a.k === 'g') {
+    const g = S.goals.find(x => x.id === a.id);
+    if (!g) return null;
+    return { label: g.title || 'Untitled goal', sub: goalProgress(g) + '% complete', hex: 'hsl(var(--hue),68%,44%)', goal: g };
+  }
+  if (a.k === 'm') {
+    const g = S.goals.find(x => x.id === a.gid);
+    const m = g && (g.milestones || []).find(x => x.id === a.id);
+    if (!m) return null;
+    return { label: m.t || 'Milestone', sub: 'toward ' + (g.title || 'a goal'), hex: 'hsl(var(--hue),68%,44%)', goal: g, ms: m };
+  }
+  return null;
+}
+function anchorText(a) {
+  const i = anchorInfo(a);
+  return i ? i.label : '';
+}
+
+
+/* ---- the anchor picker: type to filter, or write your own ---- */
+let anchorOpen = false, anchorQ = '';
+
+function anchorPicker(D, redraw) {
+  const wrap = E('div');
+  const cur = anchorInfo(D.anchor);
+
+  wrap.append(E('button', {
+    style: 'display:flex;width:100%;justify-content:space-between;align-items:center;gap:10px;' +
+           'padding:8px 0;border-bottom:1px solid ' + (anchorOpen ? 'var(--acc)' : 'var(--rule)') + ';text-align:left',
+    onclick: () => { anchorOpen = !anchorOpen; anchorQ = ''; redraw(); }
+  }, [
+    E('span', { style: 'font-size:15px;' + (cur ? `color:${cur.hex};font-weight:600` : 'color:var(--faint)'),
+      text: cur ? cur.label : 'Nothing in particular' }),
+    E('span', { style: 'color:var(--faint);font-size:12px', text: anchorOpen ? '\u25B2' : '\u25BC' })
+  ]));
+  if (!anchorOpen) return wrap;
+
+  const pick = a => { D.anchor = a; anchorOpen = false; anchorQ = ''; save(); redraw(); };
+  const input = E('input', { type: 'text', placeholder: 'Type to filter, or write your own', style: 'margin-top:10px' });
+  input.value = anchorQ;
+  const list = E('div', { style: 'max-height:union;margin-top:6px' });
+  list.style.maxHeight = '270px'; list.style.overflowY = 'auto';
+
+  const draw = () => {
+    clear(list);
+    const q = anchorQ.trim().toLowerCase();
+    let shown = 0;
+
+    if (!q) list.append(E('button', { cls: 'menu-item', style: 'font-size:13px;color:var(--mut)',
+      onclick: () => pick(null) }, 'Nothing in particular'));
+
+    anchorOptions().forEach(gr => {
+      const hits = gr.items.filter(o => !q || o.t.toLowerCase().includes(q));
+      if (!hits.length) return;
+      list.append(E('h3', { style: 'margin:12px 0 2px', text: gr.label }));
+      hits.forEach(o => {
+        shown++;
+        const info = anchorInfo(parseAnchor(o.v));
+        list.append(E('button', {
+          style: 'display:flex;width:100%;gap:9px;align-items:center;padding:9px 0;border-bottom:1px solid var(--rule);text-align:left',
+          onclick: () => pick(parseAnchor(o.v))
+        }, [
+          E('span', { style: `width:4px;align-self:stretch;min-height:18px;border-radius:2px;background:${info ? info.hex : 'var(--rule)'};flex:none` }),
+          E('span', { style: 'flex:1;min-width:0;font-size:14.5px', text: o.t })
+        ]));
+      });
+    });
+
+    const typed = anchorQ.trim();
+    if (typed && !anchorOptions().some(gr => gr.items.some(o => o.t.toLowerCase() === typed.toLowerCase()))) {
+      list.append(E('h3', { style: 'margin:12px 0 2px', text: 'Your own' }));
+      list.append(E('button', { cls: 'btn fill', style: 'margin-top:4px',
+        onclick: () => pick({ k: 'c', label: typed }) }, 'Hold today against \u201c' + typed + '\u201d'));
+    } else if (q && !shown) {
+      list.append(E('div', { cls: 'empty', text: 'Nothing matches.' }));
+    }
+  };
+
+  input.addEventListener('input', e => { anchorQ = e.target.value; draw(); });
+  input.addEventListener('keydown', e => {
+    if (e.key !== 'Enter') return;
+    e.preventDefault();
+    const q = anchorQ.trim().toLowerCase();
+    if (!q) return;
+    for (const gr of anchorOptions()) {
+      const hit = gr.items.find(o => o.t.toLowerCase().includes(q));
+      if (hit) { pick(parseAnchor(hit.v)); return; }
+    }
+    pick({ k: 'c', label: anchorQ.trim() });
+  });
+
+  wrap.append(input);
+  wrap.append(list);
+  draw();
+  requestAnimationFrame(() => input.focus());
+  return wrap;
+}
+
+
+/* ===================== boot ===================== */
+window.addEventListener('beforeunload', () => save(true));
+document.addEventListener('visibilitychange', () => {
+  if (!document.hidden) return;
+  save(true);
+  if (S.cfg.auto && S.cfg.token && S.cfg.gist && dirty) cloudPush();
+});
+render();
+if (S.cfg.auto && S.cfg.token && S.cfg.gist) {
+  cloudPull('merge').then(ok => { if (ok) render(); });
 }
 
 </script>
