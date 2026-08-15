@@ -144,7 +144,8 @@ textarea::placeholder,input::placeholder{color:var(--faint)}
 .nav{display:flex;align-items:center;justify-content:space-between;gap:10px;margin-bottom:14px}
 .nav button{width:38px;height:38px;border:1px solid var(--rule);border-radius:2px;background:#fff;
   display:grid;place-items:center;font-size:17px;color:var(--mut)}
-.nav .mid{text-align:center;flex:1}
+.nav .mid{text-align:center;flex:1;min-width:0}
+.nav .mid h1{white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
 .list-item{display:flex;gap:10px;align-items:flex-start;padding:9px 0;border-top:1px solid var(--rule)}
 .list-item:first-child{border-top:0}
 .list-item .txt{flex:1;min-width:0}
@@ -757,13 +758,14 @@ function todayBrief() {
 
 /* ===================== router ===================== */
 const now0 = new Date();
-let R = { tab: 'today', page: null, id: null, wk: isoWeek(now0), mo: now0.getMonth() };
+let R = { tab: 'today', page: null, id: null, day: iso(now0), wk: isoWeek(now0), mo: now0.getMonth() };
 
 function go(tab, page, id) { R.tab = tab; R.page = page || null; R.id = id || null; window.scrollTo(0, 0); render(); }
 
 function contextMonth() {
   if (R.tab === 'month') return R.mo;
   if (R.tab === 'week') return weekMonth(R.wk.y, R.wk.w);
+  if (R.tab === 'today') return parseIso(R.day).getMonth();
   return new Date().getMonth();
 }
 
@@ -804,20 +806,29 @@ function month(y, m) {
 /* ===================== TODAY ===================== */
 function viewToday() {
   const v = E('div');
-  const d = new Date(), k = iso(d), wk = isoWeek(d), D = day(k);
+  const k = R.day, d = parseIso(k), wk = isoWeek(d), D = day(k);
+  const isNow = sameDay(d, new Date());
   const endOfYear = new Date(YEAR, 11, 31);
-  const left = Math.max(0, Math.round((endOfYear - d) / 86400000));
+  const left = Math.max(0, Math.round((endOfYear - new Date()) / 86400000));
+  const step = n => { R.day = iso(addDays(d, n)); window.scrollTo(0, 0); render(); };
 
-  v.append(E('div', { cls: 'topbar' }, [
-    E('div', {}, [
+  v.append(E('div', { cls: 'nav' }, [
+    E('button', { text: '\u2039', 'aria-label': 'Previous day', onclick: () => step(-1) }),
+    E('div', { cls: 'mid' }, [
       E('div', { cls: 'eyebrow', text: DOW[(d.getDay() + 6) % 7] + ' · Week ' + wk.w + ' of ' + weeksInYear(YEAR) }),
-      E('h1', { text: d.getDate() + ' ' + MONTHS[d.getMonth()] }),
-      E('div', { cls: 'sub', text: left + ' days left in ' + YEAR })
-    ])
+      E('h1', { style: 'font-size:31px', text: d.getDate() + ' ' + MONTHS[d.getMonth()] }),
+      isNow ? E('div', { cls: 'sub', text: left + ' days left in ' + YEAR })
+            : E('button', {
+                style: 'display:block;width:100%;padding:1px 0;white-space:nowrap;color:var(--acc);' +
+                       'font-family:var(--disp);font-size:11px;font-weight:600;letter-spacing:.16em;text-transform:uppercase',
+                text: '\u2190 Back to today',
+                onclick: () => { R.day = iso(new Date()); render(); } })
+    ]),
+    E('button', { text: '\u203A', 'aria-label': 'Next day', onclick: () => step(1) })
   ]));
 
   const ic = E('div', { cls: 'card on' });
-  ic.append(E('label', { cls: 'fl', text: "Today's intention" }));
+  ic.append(E('label', { cls: 'fl', text: isNow ? "Today's intention" : 'Intention for this day' }));
   const it = E('textarea', {
     rows: 1, placeholder: 'What is today for?',
     style: 'font-family:var(--disp);font-size:21px;line-height:1.15;letter-spacing:.01em;border-bottom:0;padding:2px 0',
@@ -827,7 +838,7 @@ function viewToday() {
   requestAnimationFrame(() => grow(it));
   ic.append(it);
   if (!(D.intent || '').trim()) {
-    const y = S.days[iso(addDays(new Date(), -1))];
+    const y = S.days[iso(addDays(d, -1))];
     if (y && (y.intent || '').trim()) ic.append(E('button', { cls: 'btn ghost', style: 'margin-top:4px;font-size:11px',
       text: 'Carry over: ' + y.intent.slice(0, 32), onclick: () => { D.intent = y.intent; D.anchor = y.anchor || null; save(); render(); } }));
   }
@@ -883,7 +894,7 @@ function viewToday() {
 
   /* habits */
   const hc = E('div', { cls: 'card' });
-  hc.append(E('div', { cls: 'head' }, [E('h2', { text: 'Habits today' }),
+  hc.append(E('div', { cls: 'head' }, [E('h2', { text: isNow ? 'Habits today' : 'Habits' }),
     E('button', { cls: 'btn ghost', text: 'Edit', onclick: () => go('more', 'habits') })]));
   if (!habitsFor().length) {
     hc.append(E('div', { cls: 'empty', text: 'No habits yet. Set one or two per goal — small enough to do on your worst day.' }));
@@ -909,12 +920,12 @@ function viewToday() {
 
   /* today's list */
   const tc = E('div', { cls: 'card' });
-  tc.append(E('h2', { text: "Today's list" }));
+  tc.append(E('h2', { text: isNow ? "Today's list" : 'List for this day' }));
   tc.append(checkList(D.tasks, 'Nothing planned. Add the one thing that would make today count.', render));
   tc.append(E('div', { cls: 'btnrow' }, remBtn('Send to Reminders',
     () => D.tasks.filter(t => !t.d).map(t => ({ title: t.t, due: k })))));
   tc.append(E('div', { cls: 'rule' }));
-  tc.append(field('Notes on today', bindArea(D, 'note', 'What happened, what you noticed, what you made.', 1)));
+  tc.append(field(isNow ? 'Notes on today' : 'Notes', areaWithLinks(D, 'note', 'What happened, what you noticed, what you made. Paste links freely.', 1, S.links)));
   v.append(tc);
 
   /* from the phone */
@@ -925,7 +936,7 @@ function viewToday() {
   if (!S.agenda.items.length) {
     ac.append(E('div', { cls: 'empty', text: 'Nothing pulled in yet. A shortcut can copy today from Reminders and Calendar, then you paste it here.' }));
   } else if (!ag.length) {
-    ac.append(E('div', { cls: 'empty', text: 'Nothing due today in what you last brought in (' + S.agenda.at + ').' }));
+    ac.append(E('div', { cls: 'empty', text: 'Nothing due on this day in what you last brought in (' + S.agenda.at + ').' }));
   } else {
     ag.forEach(i => ac.append(E('div', { cls: 'list-item' }, [
       E('span', { cls: 'txt', style: 'font-size:14.5px', text: i.t }),
@@ -938,7 +949,7 @@ function viewToday() {
   /* week glance */
   const W = week(wk.y, wk.w);
   const wc = E('div', { cls: 'card' });
-  wc.append(E('div', { cls: 'head' }, [E('h2', { text: 'This week' }),
+  wc.append(E('div', { cls: 'head' }, [E('h2', { text: isNow ? 'This week' : 'That week' }),
     E('button', { cls: 'btn ghost', text: 'Open week', onclick: () => { R.wk = wk; go('week'); } })]));
   wc.append(field('Weekly focus', bindArea(W, 'focus', 'The one thing this week is for.')));
   W.goals = W.goals || [];
@@ -958,15 +969,15 @@ function viewToday() {
   pc.append(limbSpectrum(k, 22));
   const eng = limbsEngaged(k), lst = limbStreak();
   pc.append(E('div', { cls: 'pct', style: 'margin-top:8px',
-    text: eng ? eng + ' of 8 limbs met today' + (lst > 1 ? ' · ' + lst + ' days unbroken' : '') : 'Nothing marked today' }));
+    text: eng ? eng + ' of 8 limbs met' + (lst > 1 ? ' · ' + lst + ' days unbroken' : '') : 'Nothing marked today' }));
   v.append(pc);
 
   const sessions = entriesFor(k);
   const stc = E('div', { cls: 'card' });
   stc.append(E('div', { cls: 'head' }, [E('h2', { text: 'Studio' }),
     E('button', { cls: 'btn ghost', text: sessions.length ? 'Open' : '+ Session',
-      onclick: () => { studioView = sessions.length ? 'list' : 'form'; editingId = null; go('studio'); } })]));
-  if (!sessions.length) stc.append(E('div', { cls: 'empty', text: 'No session documented today.' }));
+      onclick: () => { studioView = sessions.length ? 'list' : 'form'; editingId = null; formDate = k; go('studio'); } })]));
+  if (!sessions.length) stc.append(E('div', { cls: 'empty', text: 'No session documented on this day.' }));
   sessions.forEach(e => stc.append(E('div', { cls: 'list-item' }, [
     E('span', { cls: 'txt', style: 'font-size:14.5px', text: e.title || 'Untitled session' }),
     E('span', { style: 'display:flex;gap:4px' }, MODES.map(m =>
@@ -1063,7 +1074,8 @@ function viewWeek() {
   for (let i = 0; i < 7; i++) {
     const dt = addDays(mon, i), dk = iso(dt), D = day(dk), isToday = sameDay(dt, new Date());
     const row = E('div', { cls: 'day' + (isToday ? ' today' : '') });
-    row.append(E('div', { cls: 'dn' }, [DOW[i], E('b', { text: pad(dt.getDate()) })]));
+    row.append(E('button', { cls: 'dn', style: 'text-align:left', 'aria-label': 'Open ' + dk,
+      onclick: () => { R.day = dk; go('today'); } }, [DOW[i], E('b', { text: pad(dt.getDate()) })]));
     const body = E('div', { style: 'flex:1;min-width:0' });
     if (limbsEngaged(dk) || entriesFor(dk).length) {
       body.append(E('div', { style: 'display:flex;gap:6px;align-items:center;margin-bottom:4px' }, [
@@ -1100,7 +1112,7 @@ function viewWeek() {
   c3.append(E('div', { cls: 'btnrow' }, remBtn('Send to Reminders',
     () => W.todos.filter(t => !t.d).map(t => ({ title: t.t, due: iso(sun) })))));
   c3.append(E('div', { cls: 'rule' }));
-  c3.append(field('Notes', bindArea(W, 'notes', '', 1)));
+  c3.append(field('Notes', areaWithLinks(W, 'notes', '', 1, S.links)));
   v.append(c3);
 
   const c4 = E('div', { cls: 'card' });
@@ -1138,7 +1150,7 @@ function viewMonth() {
     const isToday = sameDay(dt, new Date());
     grid.append(E('button', {
       style: `aspect-ratio:1;border:1px solid ${isToday ? 'var(--acc)' : 'var(--rule)'};border-radius:2px;background:${hits ? `hsl(var(--hue),62%,${96 - Math.min(hits, 5) * 8}%)` : '#fff'};display:flex;flex-direction:column;align-items:center;justify-content:center;gap:2px`,
-      onclick: () => { R.wk = isoWeek(dt); go('week'); }
+      onclick: () => { R.day = dk; go('today'); }
     }, [
       E('span', { cls: 'mono', style: 'font-size:12.5px;' + (isToday ? 'color:var(--acc);font-weight:700' : ''), text: dn }),
       E('span', { style: 'display:flex;gap:2px;height:4px' }, [
@@ -1149,7 +1161,7 @@ function viewMonth() {
     ]));
   }
   cal.append(grid);
-  cal.append(E('div', { cls: 'pct', style: 'margin-top:10px', text: 'Shade = habits · black dot = written · violet = practice · pink = studio' }));
+  cal.append(E('div', { cls: 'pct', style: 'margin-top:10px', text: 'Tap a day to open it · shade = habits · black dot = written · violet = practice · pink = studio' }));
   v.append(cal);
 
   /* month goals */
@@ -1295,12 +1307,14 @@ function viewGoal(id) {
   /* the shape of it */
   const wc = E('div', { cls: 'card on' });
   if (long) {
-    wc.append(field('Brainstorm / mind map', bindArea(g, 'brainstorm', 'Everything attached to this goal.', 1)));
-    wc.append(field('What', bindArea(g, 'what')));
-    wc.append(field('Why', bindArea(g, 'why')));
-    wc.append(field('How', bindArea(g, 'how')));
+    g.links = g.links || [];
+    wc.append(field('Brainstorm / mind map', areaWithLinks(g, 'brainstorm', 'Everything attached to this goal.', 1, g.links)));
+    wc.append(field('What', areaWithLinks(g, 'what', '', 0, g.links)));
+    wc.append(field('Why', areaWithLinks(g, 'why', '', 0, g.links)));
+    wc.append(field('How', areaWithLinks(g, 'how', '', 0, g.links)));
   } else {
-    wc.append(field('What / why', bindArea(g, 'what', '', 1)));
+    g.links = g.links || [];
+    wc.append(field('What / why', areaWithLinks(g, 'what', '', 1, g.links)));
   }
   wc.append(field('What is the feeling I am chasing?', bindArea(g, 'feeling')));
   wc.append(field('Reward', bindArea(g, 'reward')));
@@ -1668,8 +1682,8 @@ function pageNotes() {
       })()),
       E('button', { cls: 'x', text: '×', onclick: () => { if (confirm('Delete this note?')) { S.notes.splice(i, 1); save(true); render(); } } })
     ]));
-    c.append(bindArea(n, 'body', 'Write…', 1));
     n.links = n.links || [];
+    c.append(areaWithLinks(n, 'body', 'Write…', 1, n.links));
     c.append(E('div', { cls: 'rule' }));
     c.append(linkList(n.links, render, { empty: 'No links on this note.' }));
     v.append(c);
@@ -1689,7 +1703,10 @@ function pageData() {
   const c = E('div', { cls: 'card' });
   c.append(E('h2', { text: 'Back up and restore' }));
   c.append(E('div', { cls: 'btnrow' }, [
-    E('button', { cls: 'btn fill', text: 'Download backup', onclick: () => download('goal-digger-' + iso(new Date()) + '.json', JSON.stringify(S, null, 1), 'application/json') }),
+    E('button', { cls: 'btn fill', text: 'Download backup', onclick: () => {
+      download('goal-digger-' + iso(new Date()) + '.json', JSON.stringify(S, null, 1), 'application/json');
+      S.meta.lastBackup = iso(new Date()); save(true); render();
+    }}),
     E('button', { cls: 'btn', text: 'Export as text', onclick: () => download('goal-digger-' + iso(new Date()) + '.md', toMarkdown(), 'text/markdown') })
   ]));
   const file = E('input', { type: 'file', accept: '.json', style: 'display:none',
@@ -1708,6 +1725,24 @@ function pageData() {
   c.append(file);
   c.append(E('button', { cls: 'btn', style: 'margin-top:10px', text: 'Restore from backup', onclick: () => file.click() }));
   v.append(c);
+
+  /* storage health */
+  const bytes = (() => { try { return (localStorage.getItem(KEY) || '').length; } catch (e) { return 0; } })();
+  const kb = Math.round(bytes / 1024), pct = Math.min(100, Math.round(bytes / 5242880 * 100));
+  const daysSince = d => d ? Math.round((new Date() - parseIso(d)) / 86400000) : null;
+  const bAge = daysSince(S.meta.lastBackup), pAge = daysSince((S.meta.lastPush || '').slice(0, 10));
+  const hc = E('div', { cls: 'card' });
+  hc.append(E('h2', { text: 'Storage' }));
+  hc.append(E('div', { style: 'display:grid;grid-template-columns:repeat(3,1fr);gap:10px' }, [
+    E('div', { cls: 'stat' }, [E('b', { text: kb < 1024 ? kb + 'k' : (kb / 1024).toFixed(1) + 'M' }), E('span', { text: 'In use' })]),
+    E('div', { cls: 'stat' }, [E('b', { text: bAge === null ? '—' : bAge + 'd' }), E('span', { text: 'Since backup' })]),
+    E('div', { cls: 'stat' }, [E('b', { text: pAge === null ? '—' : pAge + 'd' }), E('span', { text: 'Since sync' })])
+  ]));
+  hc.append(E('div', { cls: 'bar', style: 'margin-top:12px' }, E('i', { style: 'width:' + pct + '%' })));
+  hc.append(E('div', { cls: 'pct', style: 'margin-top:6px', text: pct + '% of the usual 5MB limit' })); 
+  if (bAge === null || bAge > 14) hc.append(E('p', { cls: 'lede', style: 'margin-top:10px;color:#B23A3A',
+    text: 'No recent backup. This lives in Safari\u2019s storage, which can be wiped by clearing website data \u2014 download one now.' }));
+  v.append(hc);
 
   /* pull in the two earlier apps */
   const oc = E('div', { cls: 'card on' });
@@ -2107,6 +2142,7 @@ function renderTabs() {
     tb.append(E('button', {
       cls: R.tab === k ? 'on' : '',
       onclick: () => {
+        if (k === 'today' && R.tab === 'today') R.day = iso(new Date());
         if (k === 'week' && R.tab !== 'week') R.wk = isoWeek(new Date());
         if (k === 'studio' && R.tab !== 'studio') { studioView = 'list'; editingId = null; }
         go(k);
@@ -2315,7 +2351,7 @@ const MODES = [
     hint: 'Anticipatory: what the next session should try, change, or test. Intentions the work has generated.' }
 ];
 
-let studioView = 'list', editingId = null, openEntry = null, themeFilter = null, lightbox = null;
+let studioView = 'list', editingId = null, openEntry = null, themeFilter = null, lightbox = null, formDate = null;
 
 const newEntry = () => ({ id: uid(), date: iso(new Date()), title: '', did: '',
   inAction: '', onAction: '', forAction: '', media: [], links: [], themes: [], goal: '' });
@@ -2405,12 +2441,13 @@ function viewStudio() {
       ]))
     ]));
     if (openEntry === e.id) {
-      if (e.did) c.append(E('div', { style: 'margin-top:14px' }, [E('h3', { text: 'What I did' }), E('p', { style: 'margin:0;font-size:14.5px;white-space:pre-wrap', text: e.did })]));
+      if (e.did) c.append(E('div', { style: 'margin-top:14px' }, [E('h3', { text: 'What I did' }),
+        E('p', { style: 'margin:0;font-size:14.5px' }, linkified(e.did))]));
       MODES.forEach(m => {
         if (!(e[m.id] || '').trim()) return;
         c.append(E('div', { style: `margin-top:14px;padding-left:11px;border-left:3px solid ${m.hex}` }, [
           E('h3', { style: `color:${m.hex}`, text: m.label }),
-          E('p', { style: 'margin:0;font-size:14.5px;white-space:pre-wrap', text: e[m.id] })
+          E('p', { style: 'margin:0;font-size:14.5px' }, linkified(e[m.id]))
         ]));
       });
       if ((e.media || []).length) {
@@ -2465,7 +2502,7 @@ function studioSetup() {
 
 function studioForm() {
   const editing = editingId ? S.studio.entries.find(e => e.id === editingId) : null;
-  const e = editing || newEntry();
+  const e = editing || Object.assign(newEntry(), formDate ? { date: formDate } : {});
   const v = E('div');
   v.append(E('button', { cls: 'btn ghost', text: '‹ Cancel', onclick: () => { studioView = 'list'; editingId = null; render(); } }));
   v.append(E('h1', { text: editing ? 'Edit session' : 'New session' }));
@@ -2473,14 +2510,15 @@ function studioForm() {
   const c = E('div', { cls: 'card' });
   c.append(field('Date', bindText(e, 'date', '', 'date')));
   c.append(field('Session title', bindText(e, 'title', 'e.g. Diffraction layer tests, panel 3')));
-  c.append(field('What I did', bindArea(e, 'did', '', 1)));
+  e.links = e.links || [];
+  c.append(field('What I did', areaWithLinks(e, 'did', '', 1, e.links)));
   v.append(c);
 
   MODES.forEach(m => {
     const mc = E('div', { cls: 'card', style: `border-left:3px solid ${m.hex}` });
     mc.append(E('h3', { style: `color:${m.hex}`, text: m.label }));
     mc.append(E('p', { cls: 'lede', text: m.hint }));
-    mc.append(bindArea(e, m.id, '', 1));
+    mc.append(areaWithLinks(e, m.id, '', 1, e.links));
     v.append(mc);
   });
 
@@ -2536,7 +2574,7 @@ function studioForm() {
       e.themes = parseThemes(themeInput.value);
       e.goal = sel.value;
       if (!editing) S.studio.entries.push(e);
-      save(true); studioView = 'list'; editingId = null; openEntry = e.id; render();
+      save(true); studioView = 'list'; editingId = null; formDate = null; openEntry = e.id; render();
     }}));
   return v;
 }
@@ -2637,6 +2675,7 @@ async function cloudPush() {
     const data = await res.json();
     S.cfg.gist = data.id;
     lastSync = new Date().toISOString();
+    S.meta.lastPush = lastSync;
     dirty = false;
     save(true);
     toast('Sent to the cloud copy');
@@ -3067,6 +3106,65 @@ function anchorPicker(D, redraw) {
 }
 
 
+/* ===================== links typed inline ===================== */
+const URL_RE = /\b((?:https?:\/\/|www\.)[^\s<>"'\)\]]+|(?:[a-z0-9][\w-]*\.)+[a-z]{2,}\/[^\s<>"'\)\]]*)/gi;
+
+function foundLinks(text) {
+  const out = [];
+  String(text || '').replace(URL_RE, m => { out.push(m.replace(/[.,;:!?]+$/, '')); return m; });
+  return out.filter((u, i) => out.indexOf(u) === i);
+}
+
+/* read-only prose with its URLs made live */
+function linkified(text) {
+  const wrap = E('span', { style: 'white-space:pre-wrap' });
+  const str = String(text || '');
+  let last = 0, m;
+  URL_RE.lastIndex = 0;
+  while ((m = URL_RE.exec(str)) !== null) {
+    if (m.index > last) wrap.append(str.slice(last, m.index));
+    const raw = m[0].replace(/[.,;:!?]+$/, '');
+    wrap.append(E('a', { href: normUrl(raw), target: '_blank', rel: 'noopener noreferrer',
+      style: 'color:var(--acc);text-decoration:underline;text-underline-offset:2px', text: raw }));
+    if (raw.length < m[0].length) wrap.append(m[0].slice(raw.length));
+    last = m.index + m[0].length;
+  }
+  if (last < str.length) wrap.append(str.slice(last));
+  return wrap;
+}
+
+/* a textarea that surfaces any links inside it as tappable chips */
+function areaWithLinks(obj, key, ph, big, host) {
+  const wrap = E('div');
+  const ta = bindArea(obj, key, ph, big);
+  const chips = E('div', { style: 'display:flex;gap:6px;flex-wrap:wrap;margin-top:7px' });
+  const draw = () => {
+    clear(chips);
+    const urls = foundLinks(obj[key]);
+    urls.forEach(u => {
+      const src = sourceKind(u);
+      chips.append(E('a', {
+        href: normUrl(u), target: '_blank', rel: 'noopener noreferrer', cls: 'chip',
+        style: 'font-size:12px;padding:5px 10px 5px 8px;text-decoration:none;color:var(--ink)'
+      }, [E('span', { cls: 'dot', style: `background:${src.hex}` }), hostOf(u) || 'link']));
+    });
+    if (host && urls.length) {
+      const already = new Set((host || []).map(l => normUrl(l.url)));
+      const fresh = urls.filter(u => !already.has(normUrl(u)));
+      if (fresh.length) chips.append(E('button', { cls: 'tag acc', style: 'align-self:center',
+        onclick: () => {
+          fresh.forEach(u => host.push({ id: uid(), url: normUrl(u), label: autoLabel(u), note: '' }));
+          save(true); render();
+        }}, 'Save ' + (fresh.length > 1 ? fresh.length + ' to sources' : 'to sources')));
+    }
+  };
+  ta.addEventListener('input', draw);
+  draw();
+  wrap.append(ta, chips);
+  return wrap;
+}
+
+
 /* ===================== boot ===================== */
 window.addEventListener('beforeunload', () => save(true));
 document.addEventListener('visibilitychange', () => {
@@ -3074,6 +3172,9 @@ document.addEventListener('visibilitychange', () => {
   save(true);
   if (S.cfg.auto && S.cfg.token && S.cfg.gist && dirty) cloudPush();
 });
+if (navigator.storage && navigator.storage.persist) {
+  navigator.storage.persist().catch(() => {});
+}
 render();
 if (S.cfg.auto && S.cfg.token && S.cfg.gist) {
   cloudPull('merge').then(ok => { if (ok) render(); });
