@@ -977,7 +977,12 @@ function viewToday() {
   stc.append(E('div', { cls: 'head' }, [E('h2', { text: 'Studio' }),
     E('button', { cls: 'btn ghost', text: sessions.length ? 'Open' : '+ Session',
       onclick: () => { studioView = sessions.length ? 'list' : 'form'; editingId = null; formDate = k; go('studio'); } })]));
-  if (!sessions.length) stc.append(E('div', { cls: 'empty', text: 'No session documented on this day.' }));
+  const draft = S.studio.entries.find(e => e.draft);
+  if (draft) stc.append(E('div', { cls: 'list-item' }, [
+    E('span', { cls: 'txt', style: 'font-size:14.5px', text: (draft.title || 'Untitled') + ' — unfinished' }),
+    E('button', { cls: 'tag acc', text: 'Resume', onclick: () => { editingId = draft.id; studioView = 'form'; go('studio'); } })
+  ]));
+  if (!sessions.length && !draft) stc.append(E('div', { cls: 'empty', text: 'No session documented on this day.' }));
   sessions.forEach(e => stc.append(E('div', { cls: 'list-item' }, [
     E('span', { cls: 'txt', style: 'font-size:14.5px', text: e.title || 'Untitled session' }),
     E('span', { style: 'display:flex;gap:4px' }, MODES.map(m =>
@@ -2359,10 +2364,10 @@ const newEntry = () => ({ id: uid(), date: iso(new Date()), title: '', did: '',
 function parseThemes(s) { return (s || '').split(',').map(t => t.trim()).filter(Boolean); }
 function themeCounts() {
   const c = {};
-  S.studio.entries.forEach(e => (e.themes || []).forEach(t => c[t] = (c[t] || 0) + 1));
+  S.studio.entries.filter(e => !e.draft).forEach(e => (e.themes || []).forEach(t => c[t] = (c[t] || 0) + 1));
   return Object.entries(c).sort((a, b) => b[1] - a[1]);
 }
-function entriesFor(dayIso) { return S.studio.entries.filter(e => e.date === dayIso); }
+function entriesFor(dayIso) { return S.studio.entries.filter(e => e.date === dayIso && !e.draft); }
 
 function compressImage(file) {
   return new Promise(res => {
@@ -2393,7 +2398,8 @@ function viewStudio() {
     E('div', { cls: 'eyebrow', text: 'Creative reflective practice · after Linda Candy' }),
     E('h1', { text: 'Studio' }),
     E('div', { cls: 'sub', style: 'color:var(--mut)',
-      text: S.studio.entries.length + ' session' + (S.studio.entries.length === 1 ? '' : 's') + ' documented' })
+      text: S.studio.entries.filter(e => !e.draft).length + ' session' +
+        (S.studio.entries.filter(e => !e.draft).length === 1 ? '' : 's') + ' documented' })
   ])));
 
   const pc = E('div', { cls: 'card' });
@@ -2401,7 +2407,9 @@ function viewStudio() {
     E('h2', { text: S.studio.project.title || 'Untitled project' }),
     E('button', { cls: 'btn ghost', text: 'Edit', onclick: () => { studioView = 'setup'; render(); } })
   ]));
-  if (S.studio.project.questions) pc.append(E('p', { cls: 'lede', style: 'margin:0', text: S.studio.project.questions }));
+  const pj = S.studio.project;
+  if (pj.questions) pc.append(E('p', { cls: 'lede', style: 'margin:0', text: pj.questions }));
+  else if (pj.title) pc.append(E('div', { cls: 'empty', text: 'No research questions yet. The exegesis draft is built around them — tap Edit to add them.' }));
   else pc.append(E('div', { cls: 'empty', text: 'Set the project title and research questions — the exegesis draft is built around them.' }));
   v.append(pc);
 
@@ -2421,7 +2429,22 @@ function viewStudio() {
     v.append(tc);
   }
 
+  const drafts = S.studio.entries.filter(e => e.draft);
+  drafts.forEach(e => {
+    const c = E('div', { cls: 'card on' });
+    c.append(E('div', { cls: 'head' }, [E('h2', { text: 'Unfinished session' }), E('span', { cls: 'tag acc', text: 'Draft' })]));
+    c.append(E('p', { cls: 'lede', style: 'margin:0',
+      text: (e.title || 'Untitled') + ' \u00b7 ' + e.date + ((e.inAction || e.onAction || e.forAction || e.did) ? ' \u00b7 has writing in it' : ' \u00b7 empty so far') }));
+    c.append(E('div', { cls: 'btnrow' }, [
+      E('button', { cls: 'btn fill', text: 'Resume', onclick: () => { editingId = e.id; studioView = 'form'; window.scrollTo(0, 0); render(); } }),
+      E('button', { cls: 'btn', style: 'color:#B23A3A;border-color:#E2C4C4', text: 'Discard',
+        onclick: () => { if (confirm('Throw this draft away?')) { S.studio.entries = S.studio.entries.filter(x => x.id !== e.id); save(true); render(); } } })
+    ]));
+    v.append(c);
+  });
+
   const list = S.studio.entries
+    .filter(e => !e.draft)
     .filter(e => !themeFilter || (e.themes || []).includes(themeFilter))
     .slice().sort((a, b) => a.date < b.date ? 1 : -1);
 
@@ -2501,11 +2524,23 @@ function studioSetup() {
 }
 
 function studioForm() {
-  const editing = editingId ? S.studio.entries.find(e => e.id === editingId) : null;
-  const e = editing || Object.assign(newEntry(), formDate ? { date: formDate } : {});
+  let editing = editingId ? S.studio.entries.find(e => e.id === editingId) : null;
+  if (!editing) {
+    /* keep new sessions in storage from the first keystroke, as a draft */
+    editing = S.studio.entries.find(x => x.draft);
+    if (!editing) {
+      editing = Object.assign(newEntry(), { draft: true }, formDate ? { date: formDate } : {});
+      S.studio.entries.push(editing);
+      save(true);
+    }
+    editingId = editing.id;
+  }
+  const e = editing, isDraft = !!e.draft;
   const v = E('div');
-  v.append(E('button', { cls: 'btn ghost', text: '‹ Cancel', onclick: () => { studioView = 'list'; editingId = null; render(); } }));
-  v.append(E('h1', { text: editing ? 'Edit session' : 'New session' }));
+  v.append(E('button', { cls: 'btn ghost', text: '‹ Back', onclick: () => { studioView = 'list'; editingId = null; formDate = null; render(); } }));
+  v.append(E('h1', { text: isDraft ? 'New session' : 'Edit session' }));
+  if (isDraft) v.append(E('p', { cls: 'lede', style: 'margin-top:-4px',
+    text: 'Saving as you type. Leave whenever you like \u2014 it will be waiting under Studio as a draft.' }));
 
   const c = E('div', { cls: 'card' });
   c.append(field('Date', bindText(e, 'date', '', 'date')));
@@ -2569,20 +2604,31 @@ function studioForm() {
   tc.append(field('Linked goal', sel));
   v.append(tc);
 
-  v.append(E('button', { cls: 'btn fill', text: editing ? 'Save changes' : 'Save session',
-    onclick: () => {
-      e.themes = parseThemes(themeInput.value);
-      e.goal = sel.value;
-      if (!editing) S.studio.entries.push(e);
-      save(true); studioView = 'list'; editingId = null; formDate = null; openEntry = e.id; render();
-    }}));
+  const commit = () => { e.themes = parseThemes(themeInput.value); e.goal = sel.value; };
+  themeInput.addEventListener('input', () => { commit(); save(); });
+  sel.addEventListener('change', () => { commit(); save(); });
+
+  v.append(E('div', { cls: 'btnrow' }, [
+    E('button', { cls: 'btn fill', text: isDraft ? 'Done' : 'Save changes',
+      onclick: () => {
+        commit();
+        delete e.draft;
+        save(true); studioView = 'list'; editingId = null; formDate = null; openEntry = e.id; render();
+      }}),
+    isDraft ? E('button', { cls: 'btn', style: 'color:#B23A3A;border-color:#E2C4C4', text: 'Discard draft',
+      onclick: () => {
+        if (!confirm('Throw this draft away?')) return;
+        S.studio.entries = S.studio.entries.filter(x => x.id !== e.id);
+        save(true); studioView = 'list'; editingId = null; formDate = null; render();
+      }}) : null
+  ]));
   return v;
 }
 
 function exegesisMarkdown() {
   const L = [], p = S.studio.project;
   L.push('# ' + (p.title || 'Untitled project') + ' — exegesis draft\n');
-  L.push('_Generated ' + iso(new Date()) + ' from ' + S.studio.entries.length + ' documented sessions._\n');
+  L.push('_Generated ' + iso(new Date()) + ' from ' + S.studio.entries.filter(e => !e.draft).length + ' documented sessions._\n');
   if (p.questions) L.push('## Research questions\n\n' + p.questions + '\n');
 
   L.push('## Methodology\n');
@@ -2597,7 +2643,7 @@ function exegesisMarkdown() {
   }
 
   L.push('## Session record\n');
-  S.studio.entries.slice().sort((a, b) => a.date < b.date ? -1 : 1).forEach(e => {
+  S.studio.entries.filter(e => !e.draft).slice().sort((a, b) => a.date < b.date ? -1 : 1).forEach(e => {
     L.push('\n### ' + e.date + ' — ' + (e.title || 'Untitled session') + '\n');
     if (e.goal) {
       const g = S.goals.find(x => x.id === e.goal);
