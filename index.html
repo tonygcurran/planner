@@ -186,7 +186,7 @@ const MONTHS = ['January','February','March','April','May','June','July','August
 const DOW = ['Mon','Tue','Wed','Thu','Fri','Sat','Sun'];
 
 const DEFAULT = () => ({
-  v: 1, year: YEAR,
+  v: 1, year: YEAR, meta: { updated: '', device: '' },
   f: {},            // long-form prompt answers, keyed by field id
   habits: [],       // {id,name,hue}
   hlog: {},         // "2026-08-15": ["h1","h2"]
@@ -197,7 +197,11 @@ const DEFAULT = () => ({
   dump: [],         // {id,t,used}
   lists: [],        // {id,title,items:[{t,d}]}
   notes: [],        // {id,title,body,up}
-  cfg: { shortcut: 'Add Planner Reminder', list: '', time: '09:00' }
+  cfg: { shortcut: 'Add Planner Reminder', calShortcut: 'Add Planner Event', list: '', time: '09:00', pasteTo: 'agenda',
+    token: '', gist: '', auto: true, cloudPhotos: false, device: '' },
+  agenda: { at: '', items: [] },  // read back from Reminders/Calendar via clipboard
+  limbs: { days: {} },            // eight limbs: iso -> {marks,notes}
+  studio: { project: { title: '', questions: '' }, entries: [] }
 });
 
 let S = load();
@@ -208,11 +212,14 @@ function load() {
     return Object.assign(DEFAULT(), JSON.parse(raw));
   } catch (e) { return DEFAULT(); }
 }
-let saveTimer;
+let saveTimer, dirty = false;
 function save(now) {
   clearTimeout(saveTimer);
   const write = () => {
-    try { localStorage.setItem(KEY, JSON.stringify(S)); toast('Saved'); }
+    S.meta = S.meta || {};
+    S.meta.updated = new Date().toISOString();
+    S.meta.device = S.cfg.device || '';
+    try { localStorage.setItem(KEY, JSON.stringify(S)); toast('Saved'); dirty = true; }
     catch (e) { toast('Storage full'); }
   };
   now ? write() : saveTimer = setTimeout(write, 700);
@@ -654,6 +661,95 @@ function datedItems() {
 }
 
 
+/* ---- sending to Calendar through a second shortcut ---- */
+function sendEvents(items) {
+  const clean = (items || []).filter(i => (i.title || '').trim() && i.due);
+  if (!clean.length) { toast('Nothing dated to send'); return; }
+  const url = 'shortcuts://run-shortcut?name=' + encodeURIComponent(S.cfg.calShortcut || 'Add Planner Event') +
+    '&input=text&text=' + encodeURIComponent(JSON.stringify(remPayload(clean)));
+  const a = E('a', { href: url });
+  document.body.append(a); a.click(); a.remove();
+  toast(clean.length + ' sent to Shortcuts');
+}
+
+/* ---- reading Reminders/Calendar back in, via the clipboard ---- */
+function parseAgenda(text) {
+  if (!text || !text.trim()) return [];
+  const t = text.trim();
+  if (t[0] === '[' || t[0] === '{') {
+    try {
+      const j = JSON.parse(t);
+      const arr = Array.isArray(j) ? j : (j.items || []);
+      return arr.map(o => ({ t: (o.title || o.t || '').trim(), d: (o.due || o.date || o.d || '').slice(0, 10) }))
+        .filter(o => o.t);
+    } catch (e) { /* fall through to line parsing */ }
+  }
+  const out = [];
+  t.split(/\r?\n/).forEach(line => {
+    let s = line.replace(/^[\s\u2022\-*]+/, '').trim();
+    if (!s) return;
+    let d = '';
+    const m = s.match(/^(\d{4}-\d{2}-\d{2})(?:[ T]\d{1,2}:\d{2}(?::\d{2})?)?\s*[|\u2013\u2014:,-]?\s*(.*)$/);
+    if (m && m[2]) { d = m[1]; s = m[2].trim(); }
+    if (s) out.push({ t: s, d });
+  });
+  return out;
+}
+function setAgenda(text) {
+  const items = parseAgenda(text);
+  if (!items.length) { toast('Nothing readable'); return false; }
+  S.agenda = { at: iso(new Date()), items };
+  save(true);
+  toast(items.length + ' brought in');
+  return true;
+}
+function agendaFor(dayIso) {
+  return (S.agenda.items || []).filter(i => i.d === dayIso || !i.d);
+}
+
+
+/* ---- routing pasted text to wherever it belongs ---- */
+function ingest(text, dest) {
+  const items = parseAgenda(text);
+  if (!items.length) { toast('Nothing readable'); return false; }
+  const to = dest || S.cfg.pasteTo || 'agenda';
+  if (to === 'today') {
+    const D = day(iso(new Date()));
+    items.forEach(i => D.tasks.push({ t: i.t, d: false }));
+    toast(items.length + " added to today's list");
+  } else if (to === 'dump') {
+    items.forEach(i => S.dump.push({ id: uid(), t: i.t }));
+    toast(items.length + ' added to the brain dump');
+  } else if (to === 'week') {
+    const wk = isoWeek(new Date()), W = week(wk.y, wk.w);
+    items.forEach(i => W.todos.push({ t: i.t, d: false }));
+    toast(items.length + " added to this week's to-dos");
+  } else {
+    S.agenda = { at: iso(new Date()), items };
+    toast(items.length + ' brought in');
+  }
+  save(true);
+  return true;
+}
+
+/* a spoken-length summary of the day, for a Siri shortcut to read back */
+function todayBrief() {
+  const k = iso(new Date()), D = S.days[k] || { tasks: [] }, wk = isoWeek(new Date());
+  const W = S.weeks[weekKey(wk.y, wk.w)] || {};
+  const L = [];
+  if (W.focus) L.push('This week: ' + W.focus.split('\n')[0] + '.');
+  const open = (D.tasks || []).filter(t => !t.d && t.t.trim());
+  L.push(open.length ? 'Today: ' + open.map(t => t.t).join('; ') + '.' : 'Nothing on today\'s list yet.');
+  const hs = habitsFor().filter(h => !logged(k, h.id));
+  if (hs.length) L.push('Still to do: ' + hs.map(h => h.name || 'a habit').join(', ') + '.');
+  const eng = limbsEngaged(k);
+  L.push(eng ? eng + ' of eight limbs met so far.' : 'No practice marked yet.');
+  const live = S.goals.filter(g => !g.completed);
+  if (live.length) L.push('Goals in flight: ' + live.map(g => (g.title || 'untitled') + ' at ' + goalProgress(g) + ' per cent').join(', ') + '.');
+  return L.join(' ');
+}
+
+
 /* ===================== router ===================== */
 const now0 = new Date();
 let R = { tab: 'today', page: null, id: null, wk: isoWeek(now0), mo: now0.getMonth() };
@@ -674,6 +770,8 @@ function render() {
   else if (R.tab === 'week') v = viewWeek();
   else if (R.tab === 'month') v = viewMonth();
   else if (R.tab === 'goals') v = R.id ? viewGoal(R.id) : viewGoals();
+  else if (R.tab === 'practice') v = viewPractice();
+  else if (R.tab === 'studio') v = viewStudio();
   else v = viewMore();
   v.classList.add('view');
   app.append(v);
@@ -766,6 +864,24 @@ function viewToday() {
   tc.append(field('Notes on today', bindArea(D, 'note', 'What happened, what you noticed, what you made.', 1)));
   v.append(tc);
 
+  /* from the phone */
+  const ag = agendaFor(k);
+  const ac = E('div', { cls: 'card' });
+  ac.append(E('div', { cls: 'head' }, [E('h2', { text: 'From your iPhone' }),
+    E('button', { cls: 'btn ghost', text: 'Bring in', onclick: () => go('more', 'sync') })]));
+  if (!S.agenda.items.length) {
+    ac.append(E('div', { cls: 'empty', text: 'Nothing pulled in yet. A shortcut can copy today from Reminders and Calendar, then you paste it here.' }));
+  } else if (!ag.length) {
+    ac.append(E('div', { cls: 'empty', text: 'Nothing due today in what you last brought in (' + S.agenda.at + ').' }));
+  } else {
+    ag.forEach(i => ac.append(E('div', { cls: 'list-item' }, [
+      E('span', { cls: 'txt', style: 'font-size:14.5px', text: i.t }),
+      E('button', { cls: 'tag acc', text: 'Add', onclick: () => { D.tasks.push({ t: i.t, d: false }); save(); render(); } })
+    ])));
+    ac.append(E('div', { cls: 'pct', style: 'margin-top:8px', text: 'Brought in ' + S.agenda.at + ' · read-only copy' }));
+  }
+  v.append(ac);
+
   /* week glance */
   const W = week(wk.y, wk.w);
   const wc = E('div', { cls: 'card' });
@@ -781,6 +897,29 @@ function viewToday() {
     wc.append(E('div', { cls: 'pct', style: 'margin-top:10px', text: open + ' of ' + W.todos.length + ' to-dos still open' }));
   }
   v.append(wc);
+
+  /* practice + studio */
+  const pc = E('div', { cls: 'card' });
+  pc.append(E('div', { cls: 'head' }, [E('h2', { text: 'Practice' }),
+    E('button', { cls: 'btn ghost', text: 'Open', onclick: () => go('practice') })]));
+  pc.append(limbSpectrum(k, 22));
+  const eng = limbsEngaged(k), lst = limbStreak();
+  pc.append(E('div', { cls: 'pct', style: 'margin-top:8px',
+    text: eng ? eng + ' of 8 limbs met today' + (lst > 1 ? ' · ' + lst + ' days unbroken' : '') : 'Nothing marked today' }));
+  v.append(pc);
+
+  const sessions = entriesFor(k);
+  const stc = E('div', { cls: 'card' });
+  stc.append(E('div', { cls: 'head' }, [E('h2', { text: 'Studio' }),
+    E('button', { cls: 'btn ghost', text: sessions.length ? 'Open' : '+ Session',
+      onclick: () => { studioView = sessions.length ? 'list' : 'form'; editingId = null; go('studio'); } })]));
+  if (!sessions.length) stc.append(E('div', { cls: 'empty', text: 'No session documented today.' }));
+  sessions.forEach(e => stc.append(E('div', { cls: 'list-item' }, [
+    E('span', { cls: 'txt', style: 'font-size:14.5px', text: e.title || 'Untitled session' }),
+    E('span', { style: 'display:flex;gap:4px' }, MODES.map(m =>
+      E('span', { style: `width:16px;height:4px;border-radius:2px;background:${m.hex};opacity:${(e[m.id] || '').trim() ? 1 : .16}` })))
+  ])));
+  v.append(stc);
 
   /* goals in flight */
   const live = S.goals.filter(g => !g.completed).slice(0, 4);
@@ -873,6 +1012,12 @@ function viewWeek() {
     const row = E('div', { cls: 'day' + (isToday ? ' today' : '') });
     row.append(E('div', { cls: 'dn' }, [DOW[i], E('b', { text: pad(dt.getDate()) })]));
     const body = E('div', { style: 'flex:1;min-width:0' });
+    if (limbsEngaged(dk) || entriesFor(dk).length) {
+      body.append(E('div', { style: 'display:flex;gap:6px;align-items:center;margin-bottom:4px' }, [
+        limbsEngaged(dk) ? E('div', { style: 'flex:1;max-width:120px' }, limbSpectrum(dk, 5)) : null,
+        entriesFor(dk).length ? E('span', { cls: 'pct', style: 'color:#C6337E', text: 'studio' }) : null
+      ]));
+    }
     body.append(bindArea(D, 'note', isToday ? 'Today…' : ''));
     D.tasks.forEach((t, ti) => {
       body.append(E('div', { style: 'display:flex;gap:8px;align-items:flex-start;padding:3px 0' }, [
@@ -934,11 +1079,15 @@ function viewMonth() {
       onclick: () => { R.wk = isoWeek(dt); go('week'); }
     }, [
       E('span', { cls: 'mono', style: 'font-size:12.5px;' + (isToday ? 'color:var(--acc);font-weight:700' : ''), text: dn }),
-      E('span', { style: `width:4px;height:4px;border-radius:50%;background:${hasNote ? 'var(--ink)' : 'transparent'}` })
+      E('span', { style: 'display:flex;gap:2px;height:4px' }, [
+        E('span', { style: `width:4px;height:4px;border-radius:50%;background:${hasNote ? 'var(--ink)' : 'transparent'}` }),
+        limbsEngaged(dk) ? E('span', { style: 'width:4px;height:4px;border-radius:50%;background:#7E4FA3' }) : null,
+        entriesFor(dk).length ? E('span', { style: 'width:4px;height:4px;border-radius:50%;background:#C6337E' }) : null
+      ])
     ]));
   }
   cal.append(grid);
-  cal.append(E('div', { cls: 'pct', style: 'margin-top:10px', text: 'Shade = habits logged · dot = something written' }));
+  cal.append(E('div', { cls: 'pct', style: 'margin-top:10px', text: 'Shade = habits · black dot = written · violet = practice · pink = studio' }));
   v.append(cal);
 
   /* month goals */
@@ -1181,6 +1330,7 @@ function viewGoal(id) {
 
 /* ===================== MORE ===================== */
 const MORE_PAGES = [
+  ['month', 'This month', 'Monthly goals, rituals, calendar and review'],
   ['found', 'My 2026', 'Values, purpose, success, vision, the year at a glance'],
   ['habits', 'Habits', 'Add, colour and retire the habits you track'],
   ['year', 'Year at a glance', 'Fifty-two weeks as one image'],
@@ -1189,10 +1339,12 @@ const MORE_PAGES = [
   ['lists', 'MiLists', 'Any list you want to keep'],
   ['notes', 'Notes', 'Loose pages'],
   ['sync', 'Reminders and Calendar', 'Push dated items into your iPhone the native way'],
+  ['cloud', 'Sync across devices', 'Keep your phone and desktop copies in step'],
   ['data', 'Data', 'Back up, restore, export']
 ];
 
 function viewMore() {
+  if (R.page === 'month') { R.mo = new Date().getMonth(); go('month'); return E('div'); }
   if (R.page === 'found') return pageFound();
   if (R.page === 'habits') return pageHabits();
   if (R.page === 'year') return pageYear();
@@ -1201,6 +1353,7 @@ function viewMore() {
   if (R.page === 'lists') return pageLists();
   if (R.page === 'notes') return pageNotes();
   if (R.page === 'sync') return pageSync();
+  if (R.page === 'cloud') return pageCloud();
   if (R.page === 'data') return pageData();
 
   const v = E('div');
@@ -1482,6 +1635,31 @@ function pageData() {
   c.append(E('button', { cls: 'btn', style: 'margin-top:10px', text: 'Restore from backup', onclick: () => file.click() }));
   v.append(c);
 
+  /* pull in the two earlier apps */
+  const oc = E('div', { cls: 'card on' });
+  oc.append(E('h2', { text: 'Bring in your earlier apps' }));
+  oc.append(E('p', { cls: 'lede', text: 'If the eight limbs tracker and the studio journal are on this same site, their saved data is still here and can be merged in without retyping. Nothing is deleted from them.' }));
+  const found = [];
+  try { if (localStorage.getItem('eightlimbs')) found.push('eightlimbs'); } catch (e) {}
+  try { if (localStorage.getItem('crp-journal')) found.push('crp-journal'); } catch (e) {}
+  oc.append(E('div', { cls: 'pct', text: found.length ? 'Found: ' + found.join(', ') : 'Nothing found at this address — use the file import below instead.' }));
+  oc.append(E('div', { cls: 'btnrow' }, [
+    E('button', { cls: 'btn' + (found.includes('eightlimbs') ? ' fill' : ''), text: 'Import practice log',
+      onclick: () => importLegacy('eightlimbs') }),
+    E('button', { cls: 'btn' + (found.includes('crp-journal') ? ' fill' : ''), text: 'Import studio journal',
+      onclick: () => importLegacy('crp-journal') })
+  ]));
+  const lf = E('input', { type: 'file', accept: '.json,.html', style: 'display:none',
+    onchange: ev => {
+      const f = ev.target.files[0]; if (!f) return;
+      const r = new FileReader();
+      r.onload = () => importLegacyText(r.result);
+      r.readAsText(f);
+    }});
+  oc.append(lf);
+  oc.append(E('button', { cls: 'btn', style: 'margin-top:10px', text: 'Import from a file instead', onclick: () => lf.click() }));
+  v.append(oc);
+
   const ic = E('div', { cls: 'card' });
   ic.append(E('h2', { text: 'Keep it on your phone' }));
   ic.append(E('p', { cls: 'lede', text: 'In Safari, tap Share, then Add to Home Screen. It opens full screen with no browser chrome and keeps its own storage. Do that once and it behaves like an app.' }));
@@ -1550,23 +1728,135 @@ function pageSync() {
     E('span', { cls: 'eyebrow', style: 'width:78px', text: e.date }),
     E('span', { cls: 'txt', style: 'font-size:14px', text: e.title })])));
   cc.append(E('div', { cls: 'btnrow' }, [
-    E('button', { cls: 'btn' + (ev.length ? ' fill' : ''), text: 'Download calendar file',
+    E('button', { cls: 'btn' + (ev.length ? ' fill' : ''), text: 'Send to Calendar',
+      onclick: () => sendEvents(ev.map(e => ({ title: e.title, due: e.date }))) }),
+    E('button', { cls: 'btn', text: 'Download .ics instead',
       onclick: () => ev.length ? download('goal-digger-dates.ics', buildIcs(ev), 'text/calendar') : toast('No dated items yet') }),
-    remBtn('Send all to Reminders', () => ev.map(e => ({ title: e.title, due: e.date })))
+    remBtn('Send to Reminders', () => ev.map(e => ({ title: e.title, due: e.date })))
   ]));
+  cc.append(field('Calendar shortcut name', bindText(S.cfg, 'calShortcut', 'Add Planner Event')));
+  cc.append(E('p', { cls: 'lede', style: 'margin-top:8px', text: 'Duplicate your Reminders shortcut, rename it, and swap the last action for Add New Event — start date from the same due value. The .ics download stays as a fallback if you would rather not build a second one.' }));
   v.append(cc);
+
+  /* reading back in */
+  const ic = E('div', { cls: 'card on' });
+  ic.append(E('h2', { text: 'Bring in Reminders and Calendar' }));
+  ic.append(E('p', { cls: 'lede', text: 'Reading is the harder direction — no web app can open your Reminders or Calendar. A shortcut can copy them to the clipboard, and this reads the clipboard. Build one more shortcut:' }));
+  ['Find Calendar Events where Start Date is today (or the next 7 days).',
+   'Find Reminders that are not completed and due today.',
+   'Combine both, then Repeat with each: Format Date as yyyy-MM-dd, then Text: the date, a space, a vertical bar, a space, then the title.',
+   'Combine Text with New Lines, then Copy to Clipboard.'
+  ].forEach((t, i) => ic.append(E('div', { cls: 'list-item' }, [
+    E('span', { cls: 'num', text: (i + 1) + '.' }),
+    E('span', { cls: 'txt', style: 'font-size:14px', text: t })])));
+  ic.append(E('div', { cls: 'rule' }));
+  const dests = [['agenda', "Today's agenda"], ['today', "Today's list"], ['week', 'Week to-dos'], ['dump', 'Brain dump']];
+  const dchips = E('div', { cls: 'chips' });
+  dests.forEach(([k2, label]) => dchips.append(E('button', {
+    cls: 'chip' + (S.cfg.pasteTo === k2 ? ' on' : ''), style: S.cfg.pasteTo === k2 ? 'background:var(--acc)' : '',
+    text: label, onclick: () => { S.cfg.pasteTo = k2; save(); render(); }
+  })));
+  ic.append(field('Send whatever I paste to', dchips));
+  ic.append(E('div', { cls: 'btnrow' }, [
+    E('button', { cls: 'btn fill', text: 'Paste from clipboard', onclick: async () => {
+      try {
+        const txt = await navigator.clipboard.readText();
+        if (ingest(txt)) render();
+      } catch (e) { toast('Paste below instead'); }
+    }})
+  ]));
+  const box = E('textarea', { rows: 3, placeholder: '2026-08-15 | Studio session\n2026-08-16 | Call the framer' });
+  ic.append(field('Or paste it here by hand', box));
+  ic.append(E('button', { cls: 'btn', text: 'Read this text', onclick: () => { if (ingest(box.value)) render(); } }));
+  if (S.agenda.items.length) {
+    ic.append(E('div', { cls: 'rule' }));
+    ic.append(E('h3', { text: 'Last brought in ' + S.agenda.at }));
+    S.agenda.items.slice(0, 10).forEach(i => ic.append(E('div', { cls: 'list-item' }, [
+      E('span', { cls: 'eyebrow', style: 'width:78px', text: i.d || '—' }),
+      E('span', { cls: 'txt', style: 'font-size:14px', text: i.t })])));
+    ic.append(E('button', { cls: 'btn', style: 'margin-top:10px', text: 'Clear',
+      onclick: () => { S.agenda = { at: '', items: [] }; save(true); render(); } }));
+  }
+  ic.append(E('p', { cls: 'lede', style: 'margin-top:12px', text: 'This is a snapshot, not a link. It shows on Today until you replace it, and ticking something off here changes nothing in Reminders.' }));
+  v.append(ic);
 
   const nc = E('div', { cls: 'card' });
   nc.append(E('h2', { text: 'Notifications' }));
   nc.append(E('p', { cls: 'lede', text: 'Safari cannot schedule a notification for later, even on the Home Screen — web push exists but needs a server sending it at the moment it is due. Reminders already does this properly, across your phone, Mac and Watch, so that is where dated nudges should live.' }));
   v.append(nc);
 
+  const sc2 = E('div', { cls: 'card' });
+  sc2.append(E('h2', { text: 'Siri' }));
+  sc2.append(E('p', { cls: 'lede', text: 'Siri cannot reach this app — it only talks to Shortcuts and to Apple\u2019s own apps. So Reminders becomes the ear and the mouth: you speak to it, and the planner picks things up afterwards.' }));
+  [['Capture by voice', 'Make a shortcut with Dictate Text \u2192 Add New Reminder to a list called Planner Inbox. Say \u201cHey Siri, capture\u201d and talk. It lands in Reminders straight away.'],
+   ['Bring it back here', 'Your agenda shortcut can Find Reminders in Planner Inbox and copy them out. Set the destination above to Brain dump or Today\u2019s list, then paste.'],
+   ['Ask about the day', 'Anything the planner has sent to Reminders or Calendar, Siri already reads back \u2014 \u201cwhat are my reminders today\u201d works with no extra setup.']]
+   .forEach(([a, b]) => sc2.append(E('div', { style: 'padding:10px 0;border-top:1px solid var(--rule)' }, [
+     E('h3', { text: a }), E('p', { cls: 'lede', style: 'margin:0', text: b })])));
+  sc2.append(E('div', { cls: 'rule' }));
+  sc2.append(E('p', { cls: 'lede', text: 'For a spoken summary, copy the brief below, then have a shortcut Speak Clipboard. It is a snapshot taken when you tap \u2014 Siri cannot fetch a fresh one on its own.' }));
+  sc2.append(E('button', { cls: 'btn', text: "Copy today's brief", onclick: async () => {
+    const t = todayBrief();
+    try { await navigator.clipboard.writeText(t); toast('Copied'); }
+    catch (e) { alert(t); }
+  }}));
+  v.append(sc2);
+
   const dc = E('div', { cls: 'card' });
   dc.append(E('h2', { text: 'Across your devices' }));
-  dc.append(E('p', { cls: 'lede', text: 'The planner itself stores everything in this browser, so an iPhone copy and a desktop copy are separate books. Save your backup file to iCloud Drive and restore it on the other device when you want them to match.' }));
-  dc.append(E('button', { cls: 'btn', text: 'Go to backups', onclick: () => go('more', 'data') }));
+  dc.append(E('p', { cls: 'lede', text: 'A private gist can keep your phone and desktop copies in step automatically, with a proper merge rather than one overwriting the other.' }));
+  dc.append(E('button', { cls: 'btn', text: 'Set up sync', onclick: () => go('more', 'cloud') }));
   v.append(dc);
   return v;
+}
+
+
+/* ---------- merging the earlier apps ---------- */
+function mergeLimbs(days) {
+  let n = 0;
+  Object.entries(days || {}).forEach(([k, e]) => {
+    if (!e || (!e.marks && !e.notes)) return;
+    const cur = S.limbs.days[k] || { marks: {}, notes: {} };
+    S.limbs.days[k] = { marks: Object.assign({}, e.marks || {}, cur.marks),
+                        notes: Object.assign({}, e.notes || {}, cur.notes) };
+    n++;
+  });
+  return n;
+}
+function mergeStudio(data) {
+  if (!data) return 0;
+  if (data.project && !S.studio.project.title) S.studio.project = data.project;
+  const have = new Set(S.studio.entries.map(e => e.id));
+  let n = 0;
+  (data.entries || []).forEach(e => {
+    if (have.has(e.id)) return;
+    S.studio.entries.push(Object.assign({ media: [], themes: [], goal: '' }, e));
+    n++;
+  });
+  return n;
+}
+function importLegacy(key) {
+  let raw = null;
+  try { raw = localStorage.getItem(key); } catch (e) {}
+  if (!raw) { toast('Nothing stored here'); return; }
+  try {
+    const data = JSON.parse(raw);
+    const n = key === 'eightlimbs' ? mergeLimbs(data) : mergeStudio(data);
+    save(true); render();
+    toast(n + (key === 'eightlimbs' ? ' days merged' : ' sessions merged'));
+  } catch (e) { toast('Could not read it'); }
+}
+function importLegacyText(text) {
+  /* accepts a JSON export from either app, or the whole HTML file with data inside */
+  let data = null;
+  try { data = JSON.parse(text); } catch (e) {}
+  if (!data) { toast('Could not read that file'); return; }
+  let n = 0;
+  if (data.entries) n = mergeStudio(data);
+  else if (data.limbs || data.studio) { n = mergeLimbs((data.limbs || {}).days) + mergeStudio(data.studio); }
+  else n = mergeLimbs(data);
+  save(true); render();
+  toast(n ? n + ' merged' : 'Nothing new found');
 }
 
 
@@ -1666,6 +1956,32 @@ function toMarkdown() {
     out.push('- **' + (h.name || 'Habit') + '** — ' + days.length + ' days logged, current streak ' + streak(h.id));
   });
 
+  const pdays = Object.keys(S.limbs.days).sort();
+  if (pdays.length) {
+    out.push('\n## Practice — the eight limbs\n');
+    out.push('Logged on ' + pdays.length + ' days. Current unbroken run: ' + limbStreak() + '.\n');
+    LIMBS.forEach(l => {
+      let up = 0, slip = 0;
+      pdays.forEach(k => { const st = limbState(l, S.limbs.days[k].marks || {}); if (st === 'up') up++; else if (st === 'slip') slip++; });
+      out.push('- **' + l.sanskrit + '** (' + l.english + ') — upheld ' + up + ', slipped ' + slip);
+    });
+    out.push('');
+    pdays.forEach(k => {
+      const e = S.limbs.days[k];
+      const notes = Object.entries(e.notes || {}).filter(([, v]) => (v.text || '').trim());
+      if (!notes.length) return;
+      out.push('\n### ' + k + '\n');
+      notes.forEach(([pid, v]) => {
+        const pr = PBYID[pid];
+        out.push('**' + (pr ? pr.name : pid) + '** (' + (v.t === 'slip' ? 'slipped' : 'upheld') + ')  \n' + v.text.trim() + '\n');
+      });
+    });
+  }
+
+  if (S.studio.entries.length) {
+    out.push('\n' + exegesisMarkdown().replace(/^# /, '## '));
+  }
+
   if (S.lists.length) {
     out.push('\n## MiLists\n');
     S.lists.forEach(l => {
@@ -1698,16 +2014,18 @@ const ICONS = {
   week: '<rect x="3.5" y="5" width="17" height="15" rx="1.5"/><path d="M3.5 9.5h17M8 3v3.5M16 3v3.5"/>',
   month: '<rect x="3.5" y="4.5" width="17" height="16" rx="1.5"/><path d="M7.5 9h3M13.5 9h3M7.5 13h3M13.5 13h3M7.5 17h3"/>',
   goals: '<circle cx="12" cy="12" r="8.5"/><circle cx="12" cy="12" r="4"/><circle cx="12" cy="12" r="1" fill="currentColor"/>',
+  practice: '<path d="M12 4.5v15M5 9l7 4 7-4M6.5 17.5L12 14l5.5 3.5"/>',
+  studio: '<path d="M4 19.5V6a1.5 1.5 0 0 1 1.5-1.5H18a1.5 1.5 0 0 1 1.5 1.5v13.5"/><path d="M4 19.5h15.5M8 9h8M8 13h5"/>',
   more: '<path d="M4 7h16M4 12h16M4 17h16"/>'
 };
 function renderTabs() {
   const tb = clear($('#tabs'));
-  [['today', 'Today'], ['week', 'Week'], ['month', 'Month'], ['goals', 'Goals'], ['more', 'More']].forEach(([k, label]) => {
+  [['today', 'Today'], ['week', 'Week'], ['goals', 'Goals'], ['practice', 'Practice'], ['studio', 'Studio'], ['more', 'More']].forEach(([k, label]) => {
     tb.append(E('button', {
       cls: R.tab === k ? 'on' : '',
       onclick: () => {
         if (k === 'week' && R.tab !== 'week') R.wk = isoWeek(new Date());
-        if (k === 'month' && R.tab !== 'month') R.mo = new Date().getMonth();
+        if (k === 'studio' && R.tab !== 'studio') { studioView = 'list'; editingId = null; }
         go(k);
       }
     }, [
@@ -1717,10 +2035,664 @@ function renderTabs() {
   });
 }
 
+
+
+/* ===================== the eight limbs ===================== */
+const LIMBS = [
+  { id: 'yama', n: 1, sanskrit: 'Yama', english: 'Restraints', hue: '#B8862B',
+    desc: 'How you meet the world. Five ethical restraints practiced in ordinary interactions.',
+    practices: [
+      { id: 'ahimsa', name: 'Ahimsa · non-harming', prompt: 'Notice one harsh judgement today — of yourself counts — and soften it.',
+        askUp: 'What did you soften, and what changed?', askSlip: 'Where did harshness win today — and toward whom?' },
+      { id: 'satya', name: 'Satya · truthfulness', prompt: "Say one true thing you'd normally smooth over. Kindly.",
+        askUp: 'What truth did you speak, and how was it received?', askSlip: 'What did you smooth over or leave unsaid, and why?' },
+      { id: 'asteya', name: 'Asteya · non-stealing', prompt: "Give full credit and full attention. Take nothing that isn't offered.",
+        askUp: 'Where did you give fully instead of taking?', askSlip: "What did you take — time, attention, credit — that wasn't offered?" },
+      { id: 'brahmacharya', name: 'Brahmacharya · right use of energy', prompt: 'Notice where your energy leaks today and close one valve.',
+        askUp: 'Where was the leak, and how did you close it?', askSlip: 'Where did the energy drain, and what pulled you there?' },
+      { id: 'aparigraha', name: 'Aparigraha · non-grasping', prompt: 'Let one thing go: an object, a plan, or being right.',
+        askUp: 'What did you release, and what did it free up?', askSlip: 'What did you hold on to too tightly today?' }
+    ]},
+  { id: 'niyama', n: 2, sanskrit: 'Niyama', english: 'Observances', hue: '#C06038',
+    desc: 'How you meet yourself. Five personal observances that keep the inner house in order.',
+    practices: [
+      { id: 'saucha', name: 'Saucha · cleanliness', prompt: 'Clear one surface, one file, or one lingering task.',
+        askUp: 'What did you clear, and how does the space feel now?', askSlip: 'What clutter — physical or mental — went untouched, and what stopped you?' },
+      { id: 'santosha', name: 'Santosha · contentment', prompt: 'Name three things that are already enough.',
+        askUp: 'What are your three, today?', askSlip: 'What felt like not-enough today? Look at it once more.' },
+      { id: 'tapas', name: 'Tapas · discipline', prompt: "Do the practice especially on the day you don't feel like it.",
+        askUp: 'What resistance showed up, and what got you through it?', askSlip: 'Where did discipline give way — and what would the smallest next step be?' },
+      { id: 'svadhyaya', name: 'Svadhyaya · self-study', prompt: 'Read one page of a teaching text, or ask what a strong reaction taught you.',
+        askUp: 'What did you study or notice about yourself?', askSlip: "What reaction did you have today that you'd rather not look at? Look anyway." },
+      { id: 'ishvara', name: 'Ishvara pranidhana · surrender', prompt: 'Do the work fully, then release the outcome.',
+        askUp: 'What outcome did you hand over?', askSlip: 'What outcome are you still gripping, and what does the grip cost?' }
+    ]},
+  { id: 'asana', n: 3, sanskrit: 'Āsana', english: 'Posture', hue: '#C24E62',
+    desc: 'A steady, comfortable seat. The body made quiet enough to stop demanding attention.',
+    practices: [{ id: 'asana-p', name: 'Time on the mat', prompt: 'Any mindful time counts. Ten deliberate minutes beat a skipped hour.',
+      askUp: 'What did the body have to say today?', askSlip: 'What crowded the mat out today, honestly?' }]},
+  { id: 'pranayama', n: 4, sanskrit: 'Prāṇāyāma', english: 'Breath', hue: '#A94E8C',
+    desc: 'Regulation of breath, the hinge between body and mind.',
+    practices: [{ id: 'pranayama-p', name: 'Deliberate breathing', prompt: 'Sit and breathe on purpose. Try a 4-count in, 6-count out, for a few minutes.',
+      askUp: 'How did the breath change, and what changed with it?', askSlip: 'When did you notice the breath was shallow or held — and what was happening then?' }]},
+  { id: 'pratyahara', n: 5, sanskrit: 'Pratyāhāra', english: 'Withdrawal', hue: '#7E4FA3',
+    desc: 'Drawing the senses inward. The attention stops chasing every input.',
+    practices: [{ id: 'pratyahara-p', name: 'Input fast', prompt: 'Thirty minutes with nothing coming in — no screen, no feed, no soundtrack.',
+      askUp: 'What surfaced in the quiet?', askSlip: 'Which input kept pulling you back, and what was it offering?' }]},
+  { id: 'dharana', n: 6, sanskrit: 'Dhāraṇā', english: 'Concentration', hue: '#5A4FB0',
+    desc: 'Holding attention on a single point, and returning each time it slips.',
+    practices: [{ id: 'dharana-p', name: 'Single-point focus', prompt: 'Pick one anchor — breath, flame, sound — and return to it every time you drift.',
+      askUp: 'What was your anchor, and how often did you have to return?', askSlip: "Where did the attention keep going instead? That's information." }]},
+  { id: 'dhyana', n: 7, sanskrit: 'Dhyāna', english: 'Meditation', hue: '#3D4E9E',
+    desc: 'Concentration become unbroken. Effort begins to fall away.',
+    practices: [{ id: 'dhyana-p', name: 'Sit in meditation', prompt: 'Sit past the fidgeting. Let the focus hold itself for a while.',
+      askUp: 'What was the texture of the sit — restless, settled, somewhere between?', askSlip: 'What made sitting impossible today, and is it still in charge?' }]},
+  { id: 'samadhi', n: 8, sanskrit: 'Samādhi', english: 'Absorption', hue: '#2B3A6B',
+    desc: 'Complete absorption. Not something you do — something you notice happened.',
+    practices: [{ id: 'samadhi-p', name: 'Notice absorption', prompt: "You can't force it. Note any moment today when the doer briefly disappeared.",
+      askUp: 'When did you disappear into what you were doing?', askSlip: 'If no moment came, what kept the doer so busy today?' }]}
+];
+const PRACTICES = LIMBS.flatMap(l => l.practices.map(p => Object.assign({}, p, { limb: l })));
+const PBYID = Object.fromEntries(PRACTICES.map(p => [p.id, p]));
+
+let openLimb = null, reflecting = null;
+
+function limbDay(k) { return (S.limbs.days[k] = S.limbs.days[k] || { marks: {}, notes: {} }); }
+function limbState(limb, marks) {
+  let up = false, slip = false;
+  limb.practices.forEach(p => { if (marks[p.id] === 'up') up = true; if (marks[p.id] === 'slip') slip = true; });
+  return up ? 'up' : (slip ? 'slip' : 'none');
+}
+function setMark(k, pid, type) {
+  const e = limbDay(k);
+  if (e.marks[pid] === type) { delete e.marks[pid]; reflecting = null; }
+  else { e.marks[pid] = type; reflecting = pid; }
+  save(); render();
+}
+function limbStreak() {
+  let n = 0, d = new Date();
+  const has = dd => Object.keys((S.limbs.days[iso(dd)] || {}).marks || {}).length > 0;
+  if (!has(d)) d = addDays(d, -1);
+  while (has(d)) { n++; d = addDays(d, -1); }
+  return n;
+}
+function limbsEngaged(k) {
+  const marks = (S.limbs.days[k] || {}).marks || {};
+  return LIMBS.filter(l => limbState(l, marks) !== 'none').length;
+}
+
+/* the eight-band spectrum for one day */
+function limbSpectrum(k, h) {
+  const marks = (S.limbs.days[k] || {}).marks || {};
+  const bar = E('div', { style: 'display:flex;gap:2px' });
+  LIMBS.forEach(l => {
+    const st = limbState(l, marks);
+    bar.append(E('div', {
+      title: l.sanskrit,
+      style: `flex:1;height:${h || 26}px;border-radius:1px;background:${l.hue};` +
+             `opacity:${st === 'up' ? 1 : st === 'slip' ? .3 : .09}`
+    }));
+  });
+  return bar;
+}
+
+function viewPractice() {
+  const v = E('div'), k = iso(new Date()), e = limbDay(k);
+  const engaged = limbsEngaged(k), st = limbStreak();
+
+  v.append(E('div', { cls: 'topbar' }, E('div', {}, [
+    E('div', { cls: 'eyebrow', text: 'Aṣṭāṅga · the eight limbs' }),
+    E('h1', { text: 'Practice' }),
+    E('div', { cls: 'sub', style: 'color:var(--mut)', text: st ? st + ' day' + (st === 1 ? '' : 's') + ' unbroken' : 'Begin where you are' })
+  ])));
+
+  const sc = E('div', { cls: 'card' });
+  sc.append(limbSpectrum(k, 30));
+  sc.append(E('p', { cls: 'lede', style: 'margin:12px 0 0', text:
+    engaged === 0 ? 'Eight limbs, outer to inner. Meeting any one — well or badly — begins the day.'
+    : engaged === 8 ? 'All eight limbs met today. The full spectrum, recomposed.'
+    : engaged + ' of 8 limbs met today. Faded bands are the ones that slipped, and noticing is svadhyaya — it counts.' }));
+  v.append(sc);
+
+  LIMBS.forEach(l => {
+    const state = limbState(l, e.marks);
+    const c = E('div', { cls: 'card', style: `border-left:3px solid ${l.hue}` });
+    c.append(E('button', { style: 'display:flex;width:100%;justify-content:space-between;align-items:center;gap:10px;text-align:left',
+      onclick: () => { openLimb = openLimb === l.id ? null : l.id; render(); } }, [
+      E('span', {}, [
+        E('span', { cls: 'eyebrow', style: `color:${l.hue}`, text: 'Limb ' + l.n }),
+        E('div', { style: 'font-family:var(--disp);font-size:19px;text-transform:uppercase;letter-spacing:.06em;font-weight:700', text: l.sanskrit }),
+        E('div', { cls: 'pct', text: l.english })
+      ]),
+      E('span', { style: `width:12px;height:12px;border-radius:50%;background:${l.hue};opacity:${state === 'up' ? 1 : state === 'slip' ? .35 : .12}` })
+    ]));
+    if (openLimb === l.id) {
+      c.append(E('p', { cls: 'lede', style: 'margin-top:12px', text: l.desc }));
+      l.practices.forEach(p => {
+        const mark = e.marks[p.id], note = (e.notes[p.id] || {}).text || '';
+        const blk = E('div', { style: 'padding:12px 0;border-top:1px solid var(--rule)' });
+        blk.append(E('div', { style: 'font-size:15px;font-weight:600', text: p.name }));
+        blk.append(E('p', { cls: 'lede', style: 'margin:4px 0 8px', text: p.prompt }));
+        blk.append(E('div', { cls: 'btnrow' }, [
+          E('button', { cls: 'btn' + (mark === 'up' ? ' fill' : ''), text: 'Upheld',
+            style: mark === 'up' ? `background:${l.hue};border-color:${l.hue}` : '',
+            onclick: () => setMark(k, p.id, 'up') }),
+          E('button', { cls: 'btn', text: 'Slipped',
+            style: mark === 'slip' ? `background:${l.hue}44;border-color:${l.hue}` : '',
+            onclick: () => setMark(k, p.id, 'slip') })
+        ]));
+        if (mark || note) {
+          const ask = mark === 'slip' ? p.askSlip : p.askUp;
+          const ta = E('textarea', { rows: 2, placeholder: ask,
+            oninput: ev => { grow(ev.target); e.notes[p.id] = { t: mark || 'up', text: ev.target.value }; save(); } });
+          ta.value = note; requestAnimationFrame(() => grow(ta));
+          blk.append(E('div', { style: 'margin-top:10px' }, [E('label', { cls: 'fl', text: ask }), ta]));
+        }
+        c.append(blk);
+      });
+    }
+    v.append(c);
+  });
+
+  /* 30 days */
+  const hc = E('div', { cls: 'card' });
+  hc.append(E('h2', { text: 'Last 30 days' }));
+  const tbl = E('table', { cls: 'hgrid' });
+  const body = E('tbody');
+  LIMBS.forEach(l => {
+    const tr = E('tr', {}, E('td', { cls: 'nm', style: 'font-size:12px' }, [
+      E('span', { style: `display:inline-block;width:8px;height:8px;border-radius:50%;background:${l.hue};margin-right:6px` }),
+      l.sanskrit
+    ]));
+    const cell = E('td', { colspan: 8 });
+    const strip = E('div', { style: 'display:flex;gap:1px' });
+    for (let i = 29; i >= 0; i--) {
+      const dk = iso(addDays(new Date(), -i));
+      const stt = limbState(l, (S.limbs.days[dk] || {}).marks || {});
+      strip.append(E('div', { style: `flex:1;height:16px;border-radius:1px;background:${l.hue};opacity:${stt === 'up' ? 1 : stt === 'slip' ? .3 : .08}` }));
+    }
+    cell.append(strip);
+    tr.append(cell);
+    body.append(tr);
+  });
+  tbl.append(body);
+  hc.append(tbl);
+  v.append(hc);
+  return v;
+}
+
+
+/* ===================== studio journal (after Linda Candy) ===================== */
+const MODES = [
+  { id: 'inAction', label: 'Reflection in action', hex: '#C6337E',
+    hint: 'What you noticed while making: surprises, split-second decisions, the material talking back, moments the work resisted or offered something.' },
+  { id: 'onAction', label: 'Reflection on action', hex: '#1E96A8',
+    hint: 'Looking back on the session: what happened and why it matters. What worked, what failed productively, what it suggests about the research question.' },
+  { id: 'forAction', label: 'Reflection for action', hex: '#D9A400',
+    hint: 'Anticipatory: what the next session should try, change, or test. Intentions the work has generated.' }
+];
+
+let studioView = 'list', editingId = null, openEntry = null, themeFilter = null, lightbox = null;
+
+const newEntry = () => ({ id: uid(), date: iso(new Date()), title: '', did: '',
+  inAction: '', onAction: '', forAction: '', media: [], themes: [], goal: '' });
+
+function parseThemes(s) { return (s || '').split(',').map(t => t.trim()).filter(Boolean); }
+function themeCounts() {
+  const c = {};
+  S.studio.entries.forEach(e => (e.themes || []).forEach(t => c[t] = (c[t] || 0) + 1));
+  return Object.entries(c).sort((a, b) => b[1] - a[1]);
+}
+function entriesFor(dayIso) { return S.studio.entries.filter(e => e.date === dayIso); }
+
+function compressImage(file) {
+  return new Promise(res => {
+    const r = new FileReader();
+    r.onload = () => {
+      const img = new Image();
+      img.onload = () => {
+        const MAX = 900, sc = Math.min(1, MAX / Math.max(img.width, img.height));
+        const cv = document.createElement('canvas');
+        cv.width = Math.round(img.width * sc); cv.height = Math.round(img.height * sc);
+        cv.getContext('2d').drawImage(img, 0, 0, cv.width, cv.height);
+        res(cv.toDataURL('image/jpeg', 0.72));
+      };
+      img.onerror = () => res(null);
+      img.src = r.result;
+    };
+    r.onerror = () => res(null);
+    r.readAsDataURL(file);
+  });
+}
+
+function viewStudio() {
+  if (studioView === 'form') return studioForm();
+  if (studioView === 'setup') return studioSetup();
+  const v = E('div');
+
+  v.append(E('div', { cls: 'topbar' }, E('div', {}, [
+    E('div', { cls: 'eyebrow', text: 'Creative reflective practice · after Linda Candy' }),
+    E('h1', { text: 'Studio' }),
+    E('div', { cls: 'sub', style: 'color:var(--mut)',
+      text: S.studio.entries.length + ' session' + (S.studio.entries.length === 1 ? '' : 's') + ' documented' })
+  ])));
+
+  const pc = E('div', { cls: 'card' });
+  pc.append(E('div', { cls: 'head' }, [
+    E('h2', { text: S.studio.project.title || 'Untitled project' }),
+    E('button', { cls: 'btn ghost', text: 'Edit', onclick: () => { studioView = 'setup'; render(); } })
+  ]));
+  if (S.studio.project.questions) pc.append(E('p', { cls: 'lede', style: 'margin:0', text: S.studio.project.questions }));
+  else pc.append(E('div', { cls: 'empty', text: 'Set the project title and research questions — the exegesis draft is built around them.' }));
+  v.append(pc);
+
+  v.append(E('button', { cls: 'btn fill', style: 'margin-bottom:12px', text: '+ New session',
+    onclick: () => { editingId = null; studioView = 'form'; window.scrollTo(0, 0); render(); } }));
+
+  const themes = themeCounts();
+  if (themes.length) {
+    const tc = E('div', { cls: 'card' });
+    tc.append(E('h3', { text: 'Thematic threads' }));
+    const chips = E('div', { cls: 'chips' });
+    themes.forEach(([t, n]) => chips.append(E('button', {
+      cls: 'chip' + (themeFilter === t ? ' on' : ''), style: themeFilter === t ? 'background:var(--acc)' : '',
+      onclick: () => { themeFilter = themeFilter === t ? null : t; render(); }
+    }, [t, E('span', { style: 'opacity:.55;font-size:12px', text: n })])));
+    tc.append(chips);
+    v.append(tc);
+  }
+
+  const list = S.studio.entries
+    .filter(e => !themeFilter || (e.themes || []).includes(themeFilter))
+    .slice().sort((a, b) => a.date < b.date ? 1 : -1);
+
+  if (!list.length) v.append(E('div', { cls: 'card' }, E('div', { cls: 'empty',
+    text: 'No sessions yet. Document at the time of making — in-the-moment noticing is the part that cannot be reconstructed later.' })));
+
+  list.forEach(e => {
+    const c = E('div', { cls: 'card' });
+    c.append(E('button', { style: 'display:block;width:100%;text-align:left', onclick: () => { openEntry = openEntry === e.id ? null : e.id; render(); } }, [
+      E('div', { cls: 'eyebrow', text: e.date }),
+      E('div', { style: 'font-family:var(--disp);font-size:20px;text-transform:uppercase;letter-spacing:.04em;font-weight:700;line-height:1.05;margin:2px 0 6px', text: e.title || 'Untitled session' }),
+      E('div', { style: 'display:flex;gap:5px;align-items:center' }, MODES.map(m =>
+        E('span', { style: `width:22px;height:4px;border-radius:2px;background:${m.hex};opacity:${(e[m.id] || '').trim() ? 1 : .16}` })
+      ).concat([
+        (e.media || []).length ? E('span', { cls: 'pct', style: 'margin-left:6px', text: e.media.length + ' plate' + (e.media.length === 1 ? '' : 's') }) : null,
+        e.goal ? E('span', { cls: 'tag acc', style: 'margin-left:6px', text: (S.goals.find(g => g.id === e.goal) || {}).title || 'goal' }) : null
+      ]))
+    ]));
+    if (openEntry === e.id) {
+      if (e.did) c.append(E('div', { style: 'margin-top:14px' }, [E('h3', { text: 'What I did' }), E('p', { style: 'margin:0;font-size:14.5px;white-space:pre-wrap', text: e.did })]));
+      MODES.forEach(m => {
+        if (!(e[m.id] || '').trim()) return;
+        c.append(E('div', { style: `margin-top:14px;padding-left:11px;border-left:3px solid ${m.hex}` }, [
+          E('h3', { style: `color:${m.hex}`, text: m.label }),
+          E('p', { style: 'margin:0;font-size:14.5px;white-space:pre-wrap', text: e[m.id] })
+        ]));
+      });
+      if ((e.media || []).length) {
+        const grid = E('div', { style: 'display:grid;grid-template-columns:repeat(3,1fr);gap:5px;margin-top:14px' });
+        e.media.forEach(m => grid.append(E('button', { onclick: () => { lightbox = m; render(); } },
+          E('img', { src: m.data, style: 'width:100%;aspect-ratio:1;object-fit:cover;border-radius:2px;display:block' }))));
+        c.append(grid);
+      }
+      if ((e.themes || []).length) {
+        const tw = E('div', { cls: 'chips', style: 'margin-top:14px' });
+        e.themes.forEach(t => tw.append(E('span', { cls: 'chip', style: 'font-size:12.5px;padding:5px 10px', text: t })));
+        c.append(tw);
+      }
+      c.append(E('div', { cls: 'btnrow' }, [
+        E('button', { cls: 'btn', text: 'Edit', onclick: () => { editingId = e.id; studioView = 'form'; window.scrollTo(0, 0); render(); } }),
+        E('button', { cls: 'btn', style: 'color:#B23A3A;border-color:#E2C4C4', text: 'Delete',
+          onclick: () => { if (confirm('Delete this session?')) { S.studio.entries = S.studio.entries.filter(x => x.id !== e.id); openEntry = null; save(true); render(); } } })
+      ]));
+    }
+    v.append(c);
+  });
+
+  v.append(E('button', { cls: 'btn', style: 'margin-top:4px', text: 'Draft exegesis',
+    onclick: () => download('exegesis-draft-' + iso(new Date()) + '.md', exegesisMarkdown(), 'text/markdown') }));
+
+  if (lightbox) {
+    v.append(E('div', {
+      style: 'position:fixed;inset:0;background:rgba(15,17,20,.94);z-index:80;display:grid;place-items:center;padding:20px',
+      onclick: () => { lightbox = null; render(); }
+    }, [
+      E('img', { src: lightbox.data, style: 'max-width:100%;max-height:80vh;object-fit:contain' }),
+      lightbox.caption ? E('div', { style: 'color:#fff;font-size:13px;margin-top:12px;text-align:center', text: lightbox.caption }) : null
+    ]));
+  }
+  return v;
+}
+
+function studioSetup() {
+  const v = E('div');
+  v.append(E('button', { cls: 'btn ghost', text: '‹ Studio', onclick: () => { studioView = 'list'; render(); } }));
+  v.append(E('h1', { text: 'The project' }));
+  const c = E('div', { cls: 'card' });
+  c.append(field('Project title', bindText(S.studio.project, 'title', 'e.g. Colour Separations: painting after the interface')));
+  c.append(field('Research questions', bindArea(S.studio.project, 'questions', 'How does…?', 1)));
+  v.append(c);
+  return v;
+}
+
+function studioForm() {
+  const editing = editingId ? S.studio.entries.find(e => e.id === editingId) : null;
+  const e = editing || newEntry();
+  const v = E('div');
+  v.append(E('button', { cls: 'btn ghost', text: '‹ Cancel', onclick: () => { studioView = 'list'; editingId = null; render(); } }));
+  v.append(E('h1', { text: editing ? 'Edit session' : 'New session' }));
+
+  const c = E('div', { cls: 'card' });
+  c.append(field('Date', bindText(e, 'date', '', 'date')));
+  c.append(field('Session title', bindText(e, 'title', 'e.g. Diffraction layer tests, panel 3')));
+  c.append(field('What I did', bindArea(e, 'did', '', 1)));
+  v.append(c);
+
+  MODES.forEach(m => {
+    const mc = E('div', { cls: 'card', style: `border-left:3px solid ${m.hex}` });
+    mc.append(E('h3', { style: `color:${m.hex}`, text: m.label }));
+    mc.append(E('p', { cls: 'lede', text: m.hint }));
+    mc.append(bindArea(e, m.id, '', 1));
+    v.append(mc);
+  });
+
+  const pc = E('div', { cls: 'card' });
+  pc.append(E('h3', { text: 'Plates' }));
+  const grid = E('div', { style: 'display:grid;grid-template-columns:repeat(3,1fr);gap:5px;margin-bottom:10px' });
+  const drawPlates = () => {
+    clear(grid);
+    (e.media || []).forEach((m, i) => grid.append(E('div', { style: 'position:relative' }, [
+      E('img', { src: m.data, style: 'width:100%;aspect-ratio:1;object-fit:cover;border-radius:2px;display:block' }),
+      E('button', { cls: 'x', style: 'position:absolute;top:2px;right:4px;color:#fff;text-shadow:0 1px 3px #000', text: '×',
+        onclick: () => { e.media.splice(i, 1); drawPlates(); } })
+    ])));
+  };
+  drawPlates();
+  pc.append(grid);
+  const fileIn = E('input', { type: 'file', accept: 'image/*', multiple: true, style: 'font-size:13px',
+    onchange: async ev => {
+      const files = Array.from(ev.target.files || []);
+      for (const f of files) { const d = await compressImage(f); if (d) e.media.push({ data: d, caption: '' }); }
+      drawPlates(); toast(files.length + ' added');
+    }});
+  pc.append(fileIn);
+  pc.append(E('p', { cls: 'lede', style: 'margin-top:8px', text: 'Photos are resized before saving, but they still use most of the storage. Back up regularly.' }));
+  v.append(pc);
+
+  const tc = E('div', { cls: 'card' });
+  const themeInput = E('input', { type: 'text', value: (e.themes || []).join(', '),
+    placeholder: 'layering, surface, interface, colour separation' });
+  tc.append(field('Themes', themeInput));
+  tc.append(E('p', { cls: 'lede', text: 'Comma-separated. These become the thematic threads of the exegesis.' }));
+  const sel = E('select', { style: 'width:100%;padding:8px 0;border:0;border-bottom:1px solid var(--rule);background:transparent' });
+  sel.append(E('option', { value: '' }, 'Not linked'));
+  S.goals.forEach(g => {
+    const o = E('option', { value: g.id }, g.title || 'Untitled goal');
+    if (e.goal === g.id) o.setAttribute('selected', 'selected');
+    sel.append(o);
+  });
+  tc.append(field('Linked goal', sel));
+  v.append(tc);
+
+  v.append(E('button', { cls: 'btn fill', text: editing ? 'Save changes' : 'Save session',
+    onclick: () => {
+      e.themes = parseThemes(themeInput.value);
+      e.goal = sel.value;
+      if (!editing) S.studio.entries.push(e);
+      save(true); studioView = 'list'; editingId = null; openEntry = e.id; render();
+    }}));
+  return v;
+}
+
+function exegesisMarkdown() {
+  const L = [], p = S.studio.project;
+  L.push('# ' + (p.title || 'Untitled project') + ' — exegesis draft\n');
+  L.push('_Generated ' + iso(new Date()) + ' from ' + S.studio.entries.length + ' documented sessions._\n');
+  if (p.questions) L.push('## Research questions\n\n' + p.questions + '\n');
+
+  L.push('## Methodology\n');
+  L.push('This research was conducted through a reflective practice methodology, documenting studio sessions and reflecting on them in three temporal modes — reflection in action (observations made during the work itself), reflection on action (retrospective sense-making after each session), and reflection for action (anticipatory intentions carried into subsequent sessions). This structure follows the account of the creative reflective practitioner developed by Linda Candy, building on Donald Schön\'s foundational work on reflective practice. Sessions were documented in text and photographs at the time of making, so that in-the-moment discovery can be traced separately from later interpretation.\n');
+  L.push('[Expand: your specific documentation methods, the relationship between artefact and text in this project, and cite Candy (e.g. *The Creative Reflective Practitioner*, 2019) and Schön (*The Reflective Practitioner*, 1983) in your required referencing style.]\n');
+
+  const themes = themeCounts();
+  if (themes.length) {
+    L.push('## Thematic threads\n');
+    themes.forEach(([t, n]) => L.push('- **' + t + '** — ' + n + ' session' + (n === 1 ? '' : 's')));
+    L.push('');
+  }
+
+  L.push('## Session record\n');
+  S.studio.entries.slice().sort((a, b) => a.date < b.date ? -1 : 1).forEach(e => {
+    L.push('\n### ' + e.date + ' — ' + (e.title || 'Untitled session') + '\n');
+    if (e.goal) {
+      const g = S.goals.find(x => x.id === e.goal);
+      if (g) L.push('_Toward: ' + (g.title || 'a goal') + '_\n');
+    }
+    if (e.did) L.push('**What I did**  \n' + e.did + '\n');
+    MODES.forEach(m => { if ((e[m.id] || '').trim()) L.push('**' + m.label + '**  \n' + e[m.id] + '\n'); });
+    if ((e.media || []).length) L.push('_' + e.media.length + ' plate' + (e.media.length === 1 ? '' : 's') + ' documented._\n');
+    if ((e.themes || []).length) L.push('Themes: ' + e.themes.join(', ') + '\n');
+  });
+
+  const practiceDays = Object.keys(S.limbs.days).length;
+  if (practiceDays) {
+    L.push('\n## Practice context\n');
+    L.push('Over the same period, contemplative practice was logged on ' + practiceDays + ' days across the eight limbs.\n');
+  }
+  return L.join('\n');
+}
+
+
 /* ===================== boot ===================== */
 window.addEventListener('beforeunload', () => save(true));
-document.addEventListener('visibilitychange', () => { if (document.hidden) save(true); });
+document.addEventListener('visibilitychange', () => {
+  if (!document.hidden) return;
+  save(true);
+  if (S.cfg.auto && S.cfg.token && S.cfg.gist && dirty) cloudPush();
+});
 render();
+if (S.cfg.auto && S.cfg.token && S.cfg.gist) {
+  cloudPull('merge').then(ok => { if (ok) render(); });
+}
+
+
+/* ===================== syncing across devices ===================== */
+/* A private gist is the shared copy. No server, no account beyond the one
+   already hosting this file. The token lives only in this browser. */
+
+const GIST_FILE = 'goal-digger-2026.json';
+let syncing = false, lastSync = '';
+
+function gistHeaders() {
+  return {
+    'Authorization': 'Bearer ' + (S.cfg.token || '').trim(),
+    'Accept': 'application/vnd.github+json',
+    'Content-Type': 'application/json'
+  };
+}
+
+/* what actually gets uploaded — photos optionally stay home */
+function payloadForCloud() {
+  const c = JSON.parse(JSON.stringify(S));
+  delete c.cfg.token;
+  if (!S.cfg.cloudPhotos) {
+    (c.studio.entries || []).forEach(e => { e.media = []; e.mediaHeld = true; });
+  }
+  return JSON.stringify(c);
+}
+
+async function cloudPush() {
+  if (!S.cfg.token) { toast('Add a token first'); return false; }
+  syncing = true;
+  try {
+    const body = JSON.stringify({
+      description: 'Goal Digger ' + YEAR + ' — planner data',
+      public: false,
+      files: { [GIST_FILE]: { content: payloadForCloud() } }
+    });
+    let res;
+    if (S.cfg.gist) {
+      res = await fetch('https://api.github.com/gists/' + S.cfg.gist, { method: 'PATCH', headers: gistHeaders(), body });
+    } else {
+      res = await fetch('https://api.github.com/gists', { method: 'POST', headers: gistHeaders(), body });
+    }
+    if (!res.ok) throw new Error(res.status + ' ' + res.statusText);
+    const data = await res.json();
+    S.cfg.gist = data.id;
+    lastSync = new Date().toISOString();
+    dirty = false;
+    save(true);
+    toast('Sent to the cloud copy');
+    return true;
+  } catch (e) {
+    toast('Push failed: ' + e.message);
+    return false;
+  } finally { syncing = false; }
+}
+
+async function cloudFetch() {
+  if (!S.cfg.token || !S.cfg.gist) return null;
+  const res = await fetch('https://api.github.com/gists/' + S.cfg.gist, { headers: gistHeaders() });
+  if (!res.ok) throw new Error(res.status + ' ' + res.statusText);
+  const data = await res.json();
+  const f = (data.files || {})[GIST_FILE];
+  if (!f) throw new Error('no data file in that gist');
+  let text = f.content;
+  if (f.truncated && f.raw_url) text = await (await fetch(f.raw_url)).text();
+  return JSON.parse(text);
+}
+
+async function cloudPull(mode) {
+  if (!S.cfg.gist) { toast('No cloud copy yet'); return false; }
+  syncing = true;
+  try {
+    const remote = await cloudFetch();
+    if (!remote) throw new Error('nothing there');
+    S = mode === 'replace' ? Object.assign(DEFAULT(), remote, { cfg: S.cfg })
+                           : mergeState(remote, S);
+    lastSync = new Date().toISOString();
+    save(true);
+    toast(mode === 'replace' ? 'Replaced with the cloud copy' : 'Merged');
+    return true;
+  } catch (e) {
+    toast('Pull failed: ' + e.message);
+    return false;
+  } finally { syncing = false; }
+}
+
+/* ---- merging two copies, record by record ---- */
+function mergeById(local, remote, remoteNewer, keepMedia) {
+  const map = new Map((local || []).map(x => [x.id, x]));
+  (remote || []).forEach(r => {
+    const mine = map.get(r.id);
+    if (!mine) { map.set(r.id, r); return; }
+    if (!remoteNewer) return;
+    if (keepMedia && (!r.media || !r.media.length) && (mine.media || []).length) r.media = mine.media;
+    map.set(r.id, r);
+  });
+  return Array.from(map.values());
+}
+function mergeKeyed(local, remote, remoteNewer) {
+  const out = Object.assign({}, local || {});
+  Object.entries(remote || {}).forEach(([k, v]) => {
+    if (out[k] === undefined || remoteNewer) out[k] = v;
+  });
+  return out;
+}
+
+function mergeState(remote, local) {
+  const rt = (remote.meta || {}).updated || '', lt = (local.meta || {}).updated || '';
+  const rn = rt > lt;                       // whose prose wins on a genuine clash
+  const out = JSON.parse(JSON.stringify(local));
+
+  out.days = mergeKeyed(local.days, remote.days, rn);
+  out.weeks = mergeKeyed(local.weeks, remote.weeks, rn);
+  out.months = mergeKeyed(local.months, remote.months, rn);
+  out.hlog = mergeKeyed(local.hlog, remote.hlog, rn);
+  out.limbs = { days: mergeKeyed((local.limbs || {}).days, (remote.limbs || {}).days, rn) };
+
+  out.goals = mergeById(local.goals, remote.goals, rn);
+  out.lists = mergeById(local.lists, remote.lists, rn);
+  out.notes = mergeById(local.notes, remote.notes, rn);
+  out.dump = mergeById(local.dump, remote.dump, rn);
+  out.habits = mergeById(local.habits, remote.habits, rn);
+  out.studio = {
+    project: rn && (remote.studio || {}).project && remote.studio.project.title
+      ? remote.studio.project : (local.studio || {}).project,
+    entries: mergeById((local.studio || {}).entries, (remote.studio || {}).entries, rn, true)
+  };
+
+  /* long-form prose: fill gaps either way, newer side wins a real collision */
+  out.f = rn ? Object.assign({}, local.f, remote.f) : Object.assign({}, remote.f, local.f);
+  ['mid', 'yr', 'life', 'sav'].forEach(k => {
+    if (!remote.f || !remote.f[k]) return;
+    out.f[k] = rn ? Object.assign({}, (local.f || {})[k], remote.f[k])
+                  : Object.assign({}, remote.f[k], (local.f || {})[k]);
+  });
+
+  out.agenda = rn ? (remote.agenda || local.agenda) : local.agenda;
+  out.cfg = local.cfg;                      // device settings stay put
+  out.meta = { updated: new Date().toISOString(), device: S.cfg.device || '' };
+  return out;
+}
+
+/* ---- the page ---- */
+function pageCloud() {
+  const v = E('div');
+  v.append(backBar('Sync across devices'));
+  v.append(E('p', { cls: 'lede', text: 'Every device keeps its own copy and a private gist holds the shared one. You push when you finish, pull when you start, and the merge keeps both sides\\u2019 work rather than picking a winner.' }));
+
+  const c = E('div', { cls: 'card on' });
+  c.append(E('h2', { text: 'Set it up once' }));
+  [ 'On github.com go to Settings \\u2192 Developer settings \\u2192 Personal access tokens \\u2192 Tokens (classic).',
+    'Generate a new token, tick only the gist scope, and set a long expiry.',
+    'Paste it below and tap Create the cloud copy. That makes a private gist and remembers its id.',
+    'On your other device, open this planner, paste the same token and the same gist id, then tap Pull.'
+  ].forEach((t, i) => c.append(E('div', { cls: 'list-item' }, [
+    E('span', { cls: 'num', text: (i + 1) + '.' }),
+    E('span', { cls: 'txt', style: 'font-size:14px', text: t })])));
+  c.append(E('div', { cls: 'rule' }));
+  c.append(field('Access token', bindText(S.cfg, 'token', 'ghp_…')));
+  c.append(field('Gist id', bindText(S.cfg, 'gist', 'created for you on first push')));
+  c.append(field('Name this device', bindText(S.cfg, 'device', 'e.g. iPhone, studio PC')));
+  v.append(c);
+
+  const a = E('div', { cls: 'card' });
+  a.append(E('h2', { text: S.cfg.gist ? 'Sync' : 'Start' }));
+  a.append(E('div', { cls: 'btnrow' }, [
+    E('button', { cls: 'btn fill', text: S.cfg.gist ? 'Push' : 'Create the cloud copy',
+      onclick: async () => { if (await cloudPush()) render(); } }),
+    S.cfg.gist ? E('button', { cls: 'btn', text: 'Pull and merge', onclick: async () => { if (await cloudPull('merge')) render(); } }) : null,
+    S.cfg.gist ? E('button', { cls: 'btn', text: 'Replace with cloud',
+      onclick: async () => { if (confirm('Throw away this device\\u2019s copy and take the cloud one?')) if (await cloudPull('replace')) render(); } }) : null
+  ]));
+  if (S.meta && S.meta.updated) a.append(E('div', { cls: 'pct', style: 'margin-top:10px',
+    text: 'This device last changed ' + S.meta.updated.slice(0, 16).replace('T', ' ') + (S.meta.device ? ' on ' + S.meta.device : '') }));
+  if (lastSync) a.append(E('div', { cls: 'pct', text: 'Synced this session at ' + lastSync.slice(11, 16) }));
+  v.append(a);
+
+  const o = E('div', { cls: 'card' });
+  o.append(E('h2', { text: 'Options' }));
+  [['auto', 'Sync automatically', 'Merge in when the app opens, push when it goes to the background.'],
+   ['cloudPhotos', 'Include studio photos', 'Off keeps the shared copy small and fast. Photos then live only on the device that took them.']]
+   .forEach(([k, label, hint]) => {
+     o.append(E('div', { style: 'display:flex;gap:11px;align-items:flex-start;padding:10px 0;border-top:1px solid var(--rule)' }, [
+       E('button', { cls: 'box' + (S.cfg[k] ? ' on' : ''),
+         html: '<svg viewBox="0 0 12 12"><polyline points="1.5,6.5 4.5,9.5 10.5,2.5"/></svg>',
+         onclick: () => { S.cfg[k] = !S.cfg[k]; save(); render(); } }),
+       E('div', { style: 'flex:1' }, [E('div', { style: 'font-size:14.5px', text: label }), E('p', { cls: 'lede', style: 'margin:2px 0 0', text: hint })])
+     ]));
+   });
+  v.append(o);
+
+  const w = E('div', { cls: 'card' });
+  w.append(E('h2', { text: 'What to expect' }));
+  w.append(E('p', { cls: 'lede', text: 'Days, weeks, goals, sessions and practice all merge cleanly \\u2014 they are separate records, so both devices\\u2019 additions survive. Where the same paragraph was edited on two devices without syncing between, the more recent edit wins and the other is lost. Pull before you start writing and that never comes up.' }));
+  w.append(E('p', { cls: 'lede', text: 'The token sits in this browser\\u2019s storage. It can only touch your gists, and you can revoke it on GitHub at any time.' }));
+  v.append(w);
+  return v;
+}
 
 </script>
 </body>
