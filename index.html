@@ -196,7 +196,8 @@ const DEFAULT = () => ({
   goals: [],        // see newGoal()
   dump: [],         // {id,t,used}
   lists: [],        // {id,title,items:[{t,d}]}
-  notes: []         // {id,title,body,up}
+  notes: [],        // {id,title,body,up}
+  cfg: { shortcut: 'Add Planner Reminder', list: '', time: '09:00' }
 });
 
 let S = load();
@@ -597,6 +598,62 @@ function goalProgress(g) {
 }
 
 
+/* ===================== iOS bridges ===================== */
+/* Reminders: hand a JSON payload to a Shortcut, which does the native part. */
+function remPayload(items) {
+  return { list: (S.cfg.list || ''), items: items.map(i => {
+    const o = { title: (i.title || '').trim() };
+    if (i.due) o.due = i.due + ' ' + (S.cfg.time || '09:00');
+    if (i.notes) o.notes = i.notes;
+    return o;
+  })};
+}
+function sendReminders(items) {
+  const clean = (items || []).filter(i => (i.title || '').trim());
+  if (!clean.length) { toast('Nothing to send'); return; }
+  const url = 'shortcuts://run-shortcut?name=' + encodeURIComponent(S.cfg.shortcut || 'Add Planner Reminder') +
+    '&input=text&text=' + encodeURIComponent(JSON.stringify(remPayload(clean)));
+  const a = E('a', { href: url });
+  document.body.append(a); a.click(); a.remove();
+  toast(clean.length + ' sent to Shortcuts');
+}
+function remBtn(label, getItems) {
+  return E('button', { cls: 'btn', text: label, onclick: () => sendReminders(getItems()) });
+}
+
+/* Calendar: a standards .ics file with an alarm on each dated item. */
+function icsEsc(s) { return String(s || '').replace(/\\/g, '\\\\').replace(/([,;])/g, '\\$1').replace(/\n/g, '\\n'); }
+function icsStamp() { return new Date().toISOString().replace(/[-:]/g, '').split('.')[0] + 'Z'; }
+function buildIcs(events) {
+  const L = ['BEGIN:VCALENDAR', 'VERSION:2.0', 'PRODID:-//Goal Digger ' + YEAR + '//EN', 'CALSCALE:GREGORIAN'];
+  const alarm = 'TRIGGER:PT' + parseInt((S.cfg.time || '09:00').split(':')[0], 10) + 'H';
+  events.forEach((e, n) => {
+    const d = e.date.replace(/-/g, ''), end = iso(addDays(parseIso(e.date), 1)).replace(/-/g, '');
+    L.push('BEGIN:VEVENT', 'UID:gd' + YEAR + '-' + n + '-' + d + '@goaldigger', 'DTSTAMP:' + icsStamp(),
+      'DTSTART;VALUE=DATE:' + d, 'DTEND;VALUE=DATE:' + end, 'SUMMARY:' + icsEsc(e.title));
+    if (e.notes) L.push('DESCRIPTION:' + icsEsc(e.notes));
+    L.push('BEGIN:VALARM', alarm, 'ACTION:DISPLAY', 'DESCRIPTION:' + icsEsc(e.title), 'END:VALARM', 'END:VEVENT');
+  });
+  L.push('END:VCALENDAR');
+  /* fold long lines at 74 octets, as iCalendar requires */
+  return L.map(line => {
+    if (line.length <= 74) return line;
+    const parts = [line.slice(0, 74)];
+    for (let i = 74; i < line.length; i += 73) parts.push(' ' + line.slice(i, i + 73));
+    return parts.join('\r\n');
+  }).join('\r\n');
+}
+function datedItems() {
+  const out = [];
+  S.goals.forEach(g => {
+    if (g.completed) return;
+    if (g.due) out.push({ date: g.due, title: (g.title || 'Goal') + ' — due', notes: g.what });
+    g.milestones.forEach(m => { if (m.due && !m.d) out.push({ date: m.due, title: (m.t || 'Milestone') + ' — ' + (g.title || 'goal'), notes: '' }); });
+  });
+  return out.sort((a, b) => a.date < b.date ? -1 : 1);
+}
+
+
 /* ===================== router ===================== */
 const now0 = new Date();
 let R = { tab: 'today', page: null, id: null, wk: isoWeek(now0), mo: now0.getMonth() };
@@ -703,6 +760,8 @@ function viewToday() {
   const tc = E('div', { cls: 'card' });
   tc.append(E('h2', { text: "Today's list" }));
   tc.append(checkList(D.tasks, 'Nothing planned. Add the one thing that would make today count.', render));
+  tc.append(E('div', { cls: 'btnrow' }, remBtn('Send to Reminders',
+    () => D.tasks.filter(t => !t.d).map(t => ({ title: t.t, due: k })))));
   tc.append(E('div', { cls: 'rule' }));
   tc.append(field('Notes on today', bindArea(D, 'note', 'What happened, what you noticed, what you made.', 1)));
   v.append(tc);
@@ -831,6 +890,8 @@ function viewWeek() {
   const c3 = E('div', { cls: 'card' });
   c3.append(E('h2', { text: 'Things to do' }));
   c3.append(checkList(W.todos, 'Nothing listed for this week yet.', render));
+  c3.append(E('div', { cls: 'btnrow' }, remBtn('Send to Reminders',
+    () => W.todos.filter(t => !t.d).map(t => ({ title: t.t, due: iso(sun) })))));
   c3.append(E('div', { cls: 'rule' }));
   c3.append(field('Notes', bindArea(W, 'notes', '', 1)));
   v.append(c3);
@@ -1017,6 +1078,7 @@ function viewGoal(id) {
   })));
   tc.append(field('Type', chips));
   tc.append(field('When do I want to achieve this by?', bindText(g, 'when', 'e.g. end of October')));
+  tc.append(field('Deadline date (for Calendar and Reminders)', bindText(g, 'due', '', 'date')));
   v.append(tc);
 
   /* the shape of it */
@@ -1050,6 +1112,10 @@ function viewGoal(id) {
       })()),
       E('button', { cls: 'x', text: '×', onclick: () => { g.milestones.splice(i, 1); save(); render(); } })
     ]));
+    blk.append(E('div', { style: 'display:flex;gap:10px;align-items:center;padding-left:29px' }, [
+      E('span', { cls: 'eyebrow', text: 'By' }),
+      E('div', { style: 'flex:1' }, bindText(m, 'due', '', 'date'))
+    ]));
     if (long) {
       m.kt = m.kt || [];
       const kb = E('div', { style: 'padding-left:29px' });
@@ -1070,8 +1136,11 @@ function viewGoal(id) {
     }
     mc.append(blk);
   });
-  mc.append(E('button', { cls: 'btn', style: 'margin-top:12px', text: '+ Add milestone',
-    onclick: () => { g.milestones.push({ t: '', d: false, kt: [] }); save(); render(); } }));
+  mc.append(E('div', { cls: 'btnrow' }, [
+    E('button', { cls: 'btn', text: '+ Add milestone',
+      onclick: () => { g.milestones.push({ t: '', d: false, kt: [] }); save(); render(); } }),
+    remBtn('Send to Reminders', () => g.milestones.filter(m => !m.d).map(m => ({ title: m.t, due: m.due })))
+  ]));
   v.append(mc);
 
   /* actions */
@@ -1079,6 +1148,8 @@ function viewGoal(id) {
   ac.append(E('h2', { text: long ? 'Next steps' : 'Action list' }));
   ac.append(E('p', { cls: 'lede', text: long ? 'The essential next steps before this moves forward.' : 'Start with the first three actions — the ones you could do this week.' }));
   ac.append(checkList(g.actions, 'No actions yet.', render));
+  ac.append(E('div', { cls: 'btnrow' }, remBtn('Send to Reminders',
+    () => g.actions.filter(a => !a.d).map(a => ({ title: a.t, due: g.due })))));
   v.append(ac);
 
   /* review */
@@ -1117,6 +1188,7 @@ const MORE_PAGES = [
   ['budget', 'Budget', 'Earn, invest, save, spend'],
   ['lists', 'MiLists', 'Any list you want to keep'],
   ['notes', 'Notes', 'Loose pages'],
+  ['sync', 'Reminders and Calendar', 'Push dated items into your iPhone the native way'],
   ['data', 'Data', 'Back up, restore, export']
 ];
 
@@ -1128,6 +1200,7 @@ function viewMore() {
   if (R.page === 'budget') return pageBudget();
   if (R.page === 'lists') return pageLists();
   if (R.page === 'notes') return pageNotes();
+  if (R.page === 'sync') return pageSync();
   if (R.page === 'data') return pageData();
 
   const v = E('div');
@@ -1425,6 +1498,75 @@ function pageData() {
 function download(name, text, type) {
   const a = E('a', { href: URL.createObjectURL(new Blob([text], { type })), download: name });
   document.body.append(a); a.click(); a.remove(); toast('Downloaded');
+}
+
+
+/* ---------- reminders + calendar ---------- */
+function pageSync() {
+  const v = E('div');
+  v.append(backBar('Reminders and Calendar'));
+  v.append(E('p', { cls: 'lede', text: 'A web app cannot write to Reminders or Calendar itself, and Safari cannot schedule notifications. Shortcuts can do both — so this planner hands items over, and your iPhone does the reminding, syncing and Watch alerts as usual.' }));
+
+  const c = E('div', { cls: 'card on' });
+  c.append(E('h2', { text: 'Set up the shortcut' }));
+  c.append(E('p', { cls: 'lede', text: 'Once, in the Shortcuts app. Six actions.' }));
+  const steps = [
+    'New shortcut, named exactly as below. In its settings turn on “Show in Share Sheet” is not needed — just save it.',
+    'Add “Get Dictionary from Input”.',
+    'Add “Get Dictionary Value”, key: items.',
+    'Add “Repeat with Each” over that value.',
+    'Inside the repeat: “Get Dictionary Value”, key: title (from Repeat Item). Add a second one for key: due.',
+    'Still inside: “Add New Reminder” — title from the first value, alert at the second, list of your choice.'
+  ];
+  const ol = E('div');
+  steps.forEach((t, i) => ol.append(E('div', { cls: 'list-item' }, [
+    E('span', { cls: 'num', text: (i + 1) + '.' }), E('span', { cls: 'txt', style: 'font-size:14px', text: t })
+  ])));
+  c.append(ol);
+  c.append(E('div', { cls: 'rule' }));
+  c.append(field('Shortcut name — must match exactly', bindText(S.cfg, 'shortcut', 'Add Planner Reminder')));
+  c.append(field('Reminders list to use (passed to the shortcut)', bindText(S.cfg, 'list', 'e.g. Studio')));
+  c.append(field('Default time of day for alerts', bindText(S.cfg, 'time', '09:00')));
+  c.append(E('div', { cls: 'btnrow' }, E('button', { cls: 'btn fill', text: 'Send a test reminder',
+    onclick: () => sendReminders([{ title: 'Test from the 2026 planner', due: iso(new Date()) }]) })));
+  c.append(E('p', { cls: 'lede', style: 'margin-top:10px', text: 'If nothing happens, the name here does not match the shortcut exactly.' }));
+  v.append(c);
+
+  const wc = E('div', { cls: 'card' });
+  wc.append(E('h2', { text: 'Where the buttons are' }));
+  [['Today', "Today's list — sends everything unticked, due today"],
+   ['Week', 'Things to do — sends unticked items, due Sunday'],
+   ['Goals', 'Milestones and actions — sends unticked ones with their own dates']]
+   .forEach(([a, b]) => wc.append(E('div', { cls: 'list-item' }, [
+     E('span', { cls: 'tag acc', text: a }), E('span', { cls: 'txt', style: 'font-size:14px', text: b })])));
+  v.append(wc);
+
+  const cc = E('div', { cls: 'card' });
+  const ev = datedItems();
+  cc.append(E('h2', { text: 'Calendar' }));
+  cc.append(E('p', { cls: 'lede', text: 'Goal deadlines and dated milestones export as a standard calendar file with an alert on each. Download it, tap it in Files, and iOS offers to add them all.' }));
+  cc.append(E('div', { cls: 'pct', text: ev.length + ' dated item' + (ev.length === 1 ? '' : 's') + ' ready' }));
+  ev.slice(0, 8).forEach(e => cc.append(E('div', { cls: 'list-item' }, [
+    E('span', { cls: 'eyebrow', style: 'width:78px', text: e.date }),
+    E('span', { cls: 'txt', style: 'font-size:14px', text: e.title })])));
+  cc.append(E('div', { cls: 'btnrow' }, [
+    E('button', { cls: 'btn' + (ev.length ? ' fill' : ''), text: 'Download calendar file',
+      onclick: () => ev.length ? download('goal-digger-dates.ics', buildIcs(ev), 'text/calendar') : toast('No dated items yet') }),
+    remBtn('Send all to Reminders', () => ev.map(e => ({ title: e.title, due: e.date })))
+  ]));
+  v.append(cc);
+
+  const nc = E('div', { cls: 'card' });
+  nc.append(E('h2', { text: 'Notifications' }));
+  nc.append(E('p', { cls: 'lede', text: 'Safari cannot schedule a notification for later, even on the Home Screen — web push exists but needs a server sending it at the moment it is due. Reminders already does this properly, across your phone, Mac and Watch, so that is where dated nudges should live.' }));
+  v.append(nc);
+
+  const dc = E('div', { cls: 'card' });
+  dc.append(E('h2', { text: 'Across your devices' }));
+  dc.append(E('p', { cls: 'lede', text: 'The planner itself stores everything in this browser, so an iPhone copy and a desktop copy are separate books. Save your backup file to iCloud Drive and restore it on the other device when you want them to match.' }));
+  dc.append(E('button', { cls: 'btn', text: 'Go to backups', onclick: () => go('more', 'data') }));
+  v.append(dc);
+  return v;
 }
 
 
