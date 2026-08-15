@@ -196,7 +196,8 @@ const DEFAULT = () => ({
   goals: [],        // see newGoal()
   dump: [],         // {id,t,used}
   lists: [],        // {id,title,items:[{t,d}]}
-  notes: [],        // {id,title,body,up}
+  notes: [],        // {id,title,body,up,links}
+  links: [],        // loose library: {id,label,url,note}
   cfg: { shortcut: 'Add Planner Reminder', calShortcut: 'Add Planner Event', list: '', time: '09:00', pasteTo: 'agenda',
     token: '', gist: '', auto: true, cloudPhotos: false, device: '' },
   agenda: { at: '', items: [] },  // read back from Reminders/Calendar via clipboard
@@ -1301,6 +1302,13 @@ function viewGoal(id) {
     () => g.actions.filter(a => !a.d).map(a => ({ title: a.t, due: g.due })))));
   v.append(ac);
 
+  /* references */
+  g.links = g.links || [];
+  const lc = E('div', { cls: 'card' });
+  lc.append(E('h2', { text: 'References' }));
+  lc.append(linkList(g.links, render, { empty: 'Nothing linked to this goal yet.' }));
+  v.append(lc);
+
   /* review */
   const rc = E('div', { cls: 'card' });
   rc.append(E('h2', { text: 'Goal review' }));
@@ -1337,6 +1345,7 @@ const MORE_PAGES = [
   ['reviews', 'Reviews', 'Mid-year reset and the yearly review'],
   ['budget', 'Budget', 'Earn, invest, save, spend'],
   ['lists', 'MiLists', 'Any list you want to keep'],
+  ['sources', 'Sources', 'Articles, videos and papers, loose or attached'],
   ['notes', 'Notes', 'Loose pages'],
   ['sync', 'Reminders and Calendar', 'Push dated items into your iPhone the native way'],
   ['cloud', 'Sync across devices', 'Keep your phone and desktop copies in step'],
@@ -1352,6 +1361,7 @@ function viewMore() {
   if (R.page === 'budget') return pageBudget();
   if (R.page === 'lists') return pageLists();
   if (R.page === 'notes') return pageNotes();
+  if (R.page === 'sources') return pageSources();
   if (R.page === 'sync') return pageSync();
   if (R.page === 'cloud') return pageCloud();
   if (R.page === 'data') return pageData();
@@ -1598,6 +1608,9 @@ function pageNotes() {
       E('button', { cls: 'x', text: '×', onclick: () => { if (confirm('Delete this note?')) { S.notes.splice(i, 1); save(true); render(); } } })
     ]));
     c.append(bindArea(n, 'body', 'Write…', 1));
+    n.links = n.links || [];
+    c.append(E('div', { cls: 'rule' }));
+    c.append(linkList(n.links, render, { empty: 'No links on this note.' }));
     v.append(c);
   });
   if (!S.notes.length) v.append(E('p', { cls: 'lede', text: 'Loose pages for anything that does not belong to a week.' }));
@@ -1989,6 +2002,13 @@ function toMarkdown() {
       l.items.forEach(it => out.push('- [' + (it.d ? 'x' : ' ') + '] ' + it.t));
     });
   }
+  const srcs = allSources();
+  if (srcs.length) {
+    out.push('\n## Sources\n');
+    srcs.forEach(s2 => out.push('- ' + (s2.l.url ? '[' + (s2.l.label || s2.l.url) + '](' + s2.l.url + ')' : s2.l.label) +
+      (s2.ctx ? ' _(' + s2.where.toLowerCase() + ': ' + s2.ctx + ')_' : '') + (s2.l.note ? ' — ' + s2.l.note : '')));
+  }
+
   if (S.notes.length) {
     out.push('\n## Notes\n');
     S.notes.forEach(n => { out.push('\n### ' + (n.title || 'Note') + '\n'); out.push((n.body || '').trim() + '\n'); });
@@ -2235,7 +2255,7 @@ const MODES = [
 let studioView = 'list', editingId = null, openEntry = null, themeFilter = null, lightbox = null;
 
 const newEntry = () => ({ id: uid(), date: iso(new Date()), title: '', did: '',
-  inAction: '', onAction: '', forAction: '', media: [], themes: [], goal: '' });
+  inAction: '', onAction: '', forAction: '', media: [], links: [], themes: [], goal: '' });
 
 function parseThemes(s) { return (s || '').split(',').map(t => t.trim()).filter(Boolean); }
 function themeCounts() {
@@ -2336,6 +2356,10 @@ function viewStudio() {
           E('img', { src: m.data, style: 'width:100%;aspect-ratio:1;object-fit:cover;border-radius:2px;display:block' }))));
         c.append(grid);
       }
+      if ((e.links || []).length) {
+        c.append(E('div', { style: 'margin-top:14px' }, [E('h3', { text: 'Sources' }),
+          linkList(e.links, render, { compact: true })]));
+      }
       if ((e.themes || []).length) {
         const tw = E('div', { cls: 'chips', style: 'margin-top:14px' });
         e.themes.forEach(t => tw.append(E('span', { cls: 'chip', style: 'font-size:12.5px;padding:5px 10px', text: t })));
@@ -2420,6 +2444,15 @@ function studioForm() {
   pc.append(E('p', { cls: 'lede', style: 'margin-top:8px', text: 'Photos are resized before saving, but they still use most of the storage. Back up regularly.' }));
   v.append(pc);
 
+  const lc = E('div', { cls: 'card' });
+  lc.append(E('h3', { text: 'Sources' }));
+  lc.append(E('p', { cls: 'lede', text: 'A paper that prompted the session, a video you were working from, a page you want to cite later.' }));
+  e.links = e.links || [];
+  const drawLinks = () => { clear(lbox).append(linkList(e.links, drawLinks)); };
+  const lbox = E('div');
+  lc.append(lbox); drawLinks();
+  v.append(lc);
+
   const tc = E('div', { cls: 'card' });
   const themeInput = E('input', { type: 'text', value: (e.themes || []).join(', '),
     placeholder: 'layering, surface, interface, colour separation' });
@@ -2472,8 +2505,21 @@ function exegesisMarkdown() {
     if (e.did) L.push('**What I did**  \n' + e.did + '\n');
     MODES.forEach(m => { if ((e[m.id] || '').trim()) L.push('**' + m.label + '**  \n' + e[m.id] + '\n'); });
     if ((e.media || []).length) L.push('_' + e.media.length + ' plate' + (e.media.length === 1 ? '' : 's') + ' documented._\n');
+    if ((e.links || []).length) {
+      L.push('**Sources**');
+      e.links.forEach(l => L.push('- ' + (l.url ? '[' + (l.label || l.url) + '](' + l.url + ')' : l.label) + (l.note ? ' — ' + l.note : '')));
+      L.push('');
+    }
     if ((e.themes || []).length) L.push('Themes: ' + e.themes.join(', ') + '\n');
   });
+
+  const cited = allSources();
+  if (cited.length) {
+    L.push('\n## Sources referenced\n');
+    cited.forEach(s2 => L.push('- ' + (s2.l.url ? '[' + (s2.l.label || s2.l.url) + '](' + s2.l.url + ')' : s2.l.label) +
+      (s2.ctx ? ' — ' + s2.where.toLowerCase() + ': ' + s2.ctx : '') + (s2.l.note ? '. ' + s2.l.note : '')));
+    L.push('\n[Reformat into your required referencing style.]\n');
+  }
 
   const practiceDays = Object.keys(S.limbs.days).length;
   if (practiceDays) {
@@ -2617,6 +2663,7 @@ function mergeState(remote, local) {
   out.notes = mergeById(local.notes, remote.notes, rn);
   out.dump = mergeById(local.dump, remote.dump, rn);
   out.habits = mergeById(local.habits, remote.habits, rn);
+  out.links = mergeById(local.links, remote.links, rn);
   out.studio = {
     project: rn && (remote.studio || {}).project && remote.studio.project.title
       ? remote.studio.project : (local.studio || {}).project,
@@ -2691,6 +2738,139 @@ function pageCloud() {
   w.append(E('p', { cls: 'lede', text: 'Days, weeks, goals, sessions and practice all merge cleanly \\u2014 they are separate records, so both devices\\u2019 additions survive. Where the same paragraph was edited on two devices without syncing between, the more recent edit wins and the other is lost. Pull before you start writing and that never comes up.' }));
   w.append(E('p', { cls: 'lede', text: 'The token sits in this browser\\u2019s storage. It can only touch your gists, and you can revoke it on GitHub at any time.' }));
   v.append(w);
+  return v;
+}
+
+
+/* ===================== linked sources ===================== */
+function normUrl(u) {
+  u = (u || '').trim();
+  if (!u) return '';
+  return /^https?:\/\//i.test(u) ? u : 'https://' + u;
+}
+function ytId(url) {
+  const m = String(url).match(/(?:youtube\.com\/(?:watch\?(?:.*&)?v=|embed\/|shorts\/)|youtu\.be\/)([\w-]{11})/);
+  return m ? m[1] : null;
+}
+function hostOf(url) {
+  try { return new URL(normUrl(url)).hostname.replace(/^www\./, ''); }
+  catch (e) { return ''; }
+}
+function sourceKind(url) {
+  const h = hostOf(url);
+  if (ytId(url)) return { k: 'video', label: 'YouTube', hex: '#C0392B' };
+  if (/vimeo\.com/.test(h)) return { k: 'video', label: 'Vimeo', hex: '#1E96A8' };
+  if (/(doi\.org|jstor|tandfonline|sciencedirect|springer|academia\.edu|researchgate|scholar\.google)/.test(h))
+    return { k: 'paper', label: 'Paper', hex: '#5A4FB0' };
+  if (/(instagram|vsco|behance|artsy|saatchi)/.test(h)) return { k: 'image', label: 'Images', hex: '#C6337E' };
+  if (/(podcasts\.apple|spotify|soundcloud)/.test(h)) return { k: 'audio', label: 'Audio', hex: '#D9A400' };
+  return { k: 'page', label: h || 'Link', hex: '#71716D' };
+}
+function autoLabel(url) {
+  const h = hostOf(url);
+  try {
+    const p = new URL(normUrl(url)).pathname.split('/').filter(Boolean).pop() || '';
+    const t = decodeURIComponent(p).replace(/[-_+]/g, ' ').replace(/\.\w{2,4}$/, '').trim();
+    if (t && t.length > 3 && !/^[\w-]{11}$/.test(t)) return t.charAt(0).toUpperCase() + t.slice(1);
+  } catch (e) {}
+  return h;
+}
+
+/* arr: [{id,label,url,note}] */
+function linkList(arr, redraw, opts) {
+  opts = opts || {};
+  const box = E('div');
+  (arr || []).forEach((l, i) => {
+    const src = sourceKind(l.url), id = ytId(l.url);
+    const row = E('div', { style: 'padding:11px 0;border-top:1px solid var(--rule)' });
+    row.append(E('div', { style: 'display:flex;gap:10px;align-items:flex-start' }, [
+      id ? E('img', { src: 'https://img.youtube.com/vi/' + id + '/mqdefault.jpg', loading: 'lazy',
+              style: 'width:64px;height:36px;object-fit:cover;border-radius:2px;flex:none;background:var(--paper)' })
+         : E('span', { style: `width:4px;align-self:stretch;min-height:34px;border-radius:2px;background:${src.hex};flex:none` }),
+      E('div', { style: 'flex:1;min-width:0' }, [
+        l.url
+          ? E('a', { href: normUrl(l.url), target: '_blank', rel: 'noopener noreferrer',
+              style: 'font-size:14.5px;color:var(--ink);text-decoration:none;display:block;font-weight:600',
+              text: l.label || autoLabel(l.url) })
+          : E('span', { style: 'font-size:14.5px;font-weight:600', text: l.label || 'Untitled source' }),
+        E('div', { style: 'display:flex;gap:7px;align-items:center;margin-top:3px;flex-wrap:wrap' }, [
+          E('span', { cls: 'tag', style: `border-color:${src.hex}55;color:${src.hex}`, text: src.label }),
+          E('span', { cls: 'pct', style: 'overflow:hidden;text-overflow:ellipsis;white-space:nowrap;max-width:150px', text: hostOf(l.url) })
+        ])
+      ]),
+      E('button', { cls: 'x', text: '×', 'aria-label': 'Remove source',
+        onclick: () => { arr.splice(i, 1); save(); redraw(); } })
+    ]));
+    if (!opts.compact) {
+      const ta = E('textarea', { rows: 1, placeholder: 'Why this matters — a line for later',
+        style: 'font-size:14px;margin-top:6px',
+        oninput: ev => { grow(ev.target); l.note = ev.target.value; save(); } });
+      ta.value = l.note || '';
+      requestAnimationFrame(() => grow(ta));
+      row.append(ta);
+    }
+    box.append(row);
+  });
+
+  const urlIn = E('input', { type: 'text', placeholder: 'Paste a link', inputmode: 'url', autocapitalize: 'off' });
+  const labIn = E('input', { type: 'text', placeholder: 'Label (optional)' });
+  const add = () => {
+    const u = normUrl(urlIn.value);
+    if (!u && !labIn.value.trim()) { toast('Nothing to add'); return; }
+    arr.push({ id: uid(), url: u, label: labIn.value.trim() || (u ? autoLabel(u) : 'Untitled source'), note: '' });
+    save(); redraw();
+  };
+  urlIn.addEventListener('keydown', e => { if (e.key === 'Enter') add(); });
+  box.append(E('div', { style: 'margin-top:12px;display:flex;gap:8px;flex-wrap:wrap;align-items:center' }, [
+    E('div', { style: 'flex:2;min-width:150px' }, urlIn),
+    E('div', { style: 'flex:1.2;min-width:110px' }, labIn),
+    E('button', { cls: 'btn', text: 'Add', onclick: add })
+  ]));
+  if (!(arr || []).length) box.insertBefore(E('div', { cls: 'empty', text: opts.empty || 'No sources linked yet.' }), box.firstChild);
+  return box;
+}
+
+/* every link in the planner, gathered */
+function allSources() {
+  const out = [];
+  const push = (l, where, ctx) => out.push({ l, where, ctx });
+  (S.links || []).forEach(l => push(l, 'Library', ''));
+  S.studio.entries.forEach(e => (e.links || []).forEach(l => push(l, 'Studio', e.title || e.date)));
+  S.goals.forEach(g => (g.links || []).forEach(l => push(l, 'Goal', g.title || 'Untitled goal')));
+  S.notes.forEach(n => (n.links || []).forEach(l => push(l, 'Note', n.title || 'Untitled note')));
+  return out;
+}
+
+function pageSources() {
+  const v = E('div');
+  v.append(backBar('Sources'));
+  v.append(E('p', { cls: 'lede', text: 'Articles, videos, papers and pages — kept loose here, or attached to a session, a goal or a note where they belong.' }));
+
+  const c = E('div', { cls: 'card on' });
+  c.append(E('h2', { text: 'Library' }));
+  S.links = S.links || [];
+  c.append(linkList(S.links, render, { empty: 'Nothing here yet. Paste a link and it works out what kind of thing it is.' }));
+  v.append(c);
+
+  const attached = allSources().filter(s => s.where !== 'Library');
+  if (attached.length) {
+    const ac = E('div', { cls: 'card' });
+    ac.append(E('h2', { text: 'Attached elsewhere' }));
+    attached.forEach(s => {
+      const src = sourceKind(s.l.url);
+      ac.append(E('div', { cls: 'list-item' }, [
+        E('span', { style: `width:4px;align-self:stretch;border-radius:2px;background:${src.hex};flex:none` }),
+        E('div', { cls: 'txt' }, [
+          s.l.url
+            ? E('a', { href: normUrl(s.l.url), target: '_blank', rel: 'noopener noreferrer',
+                style: 'font-size:14px;color:var(--ink);text-decoration:none', text: s.l.label || autoLabel(s.l.url) })
+            : E('span', { style: 'font-size:14px', text: s.l.label }),
+          E('div', { cls: 'pct', text: s.where + ' · ' + s.ctx })
+        ])
+      ]));
+    });
+    v.append(ac);
+  }
   return v;
 }
 
