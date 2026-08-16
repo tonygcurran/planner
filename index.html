@@ -182,13 +182,14 @@ textarea::placeholder,input::placeholder{color:var(--faint)}
 <script>
 /* ===================== core ===================== */
 const KEY = 'goaldigger2026';
-const YEAR = 2026;
+const YEAR = 2026;                       /* the year this planner began */
+const CURRENT_YEAR = new Date().getFullYear();
 const MONTHS = ['January','February','March','April','May','June','July','August','September','October','November','December'];
 const DOW = ['Mon','Tue','Wed','Thu','Fri','Sat','Sun'];
 
 const DEFAULT = () => ({
-  v: 1, year: YEAR, meta: { updated: '', device: '' },
-  f: {},            // long-form prompt answers, keyed by field id
+  v: 2, year: YEAR, meta: { updated: '', device: '' },
+  years: {},        // per-year records: { '2026': { f: {...} } } — foundations, reviews, budget
   habits: [],       // {id,name,hue}
   hlog: {},         // "2026-08-15": ["h1","h2"]
   days: {},         // "2026-08-15": {note, tasks:[{t,d}]}
@@ -211,9 +212,38 @@ function load() {
   try {
     const raw = localStorage.getItem(KEY);
     if (!raw) return DEFAULT();
-    return Object.assign(DEFAULT(), JSON.parse(raw));
+    return migrate(Object.assign(DEFAULT(), JSON.parse(raw)));
   } catch (e) { return DEFAULT(); }
 }
+/* v1 kept one year's prompts in S.f — move it into the per-year store */
+function migrate(st) {
+  st.years = st.years || {};
+  if (st.f && Object.keys(st.f).length) {
+    const y = String(st.year || YEAR);
+    st.years[y] = st.years[y] || { f: {} };
+    st.years[y].f = Object.assign({}, st.f, st.years[y].f);
+    delete st.f;
+  }
+  return st;
+}
+
+/* the year currently being looked at, and its prompt record */
+function yearRec(y) {
+  const k = String(y || (typeof R !== 'undefined' ? R.year : YEAR));
+  S.years[k] = S.years[k] || { f: {} };
+  S.years[k].f = S.years[k].f || {};
+  return S.years[k];
+}
+function YF(y) { return yearRec(y).f; }
+function yearsPresent() {
+  const set = {};
+  Object.keys(S.years || {}).forEach(y => set[y] = 1);
+  Object.keys(S.weeks || {}).forEach(k => set[k.slice(0, 4)] = 1);
+  Object.keys(S.days || {}).forEach(k => set[k.slice(0, 4)] = 1);
+  set[String(YEAR)] = 1;
+  return Object.keys(set).sort();
+}
+
 let saveTimer, dirty = false;
 function save(now) {
   clearTimeout(saveTimer);
@@ -368,15 +398,15 @@ const FOUNDATIONS = [
     L('inspire', 'Books, podcasts and apps that inspire me', 4),
     L('happy', 'Places and things that make me happy', 4)
   ]},
-  { id: 'lastyear', t: 'Wins and lessons from 2025', d: 'Evaluate the year behind you before you plan the one ahead.', f: [
-    A('y_achieved', 'Amazing things I achieved in 2025'),
+  { id: 'lastyear', t: 'Wins and lessons from the year before', d: 'Evaluate the year behind you before you plan the one ahead.', f: [
+    A('y_achieved', 'Amazing things I achieved'),
     A('y_wins', 'My wins'),
     A('y_misses', 'My misses'),
     A('y_lessons', 'My lessons'),
     A('y_grow', 'How did I grow in 2025?'),
-    A('y_focus', 'What am I focusing on in 2026?'),
-    A('y_excited', "Things I'm excited for in 2026"),
-    { k: 'y_rate', l: 'Rate 2025 out of ten', ty: 'scale' }
+    A('y_focus', 'What am I focusing on this year?'),
+    A('y_excited', "Things I'm excited for"),
+    { k: 'y_rate', l: 'Rate last year out of ten', ty: 'scale' }
   ]},
   { id: 'ratelife', t: 'Rate your life', d: 'Score each area now, then again at the end of the year. Balance is allocation, not equality.', special: 'ratelife' },
   { id: 'future', t: 'Mi Future', d: 'Think ahead to the life you want to be living.', special: 'future' },
@@ -385,8 +415,8 @@ const FOUNDATIONS = [
     T('letter_date', 'Dated'),
     A('letter', 'A letter from my future self', 1)
   ]},
-  { id: 'inout', t: 'In and out', d: 'What gives you energy in 2026, and what you are leaving in 2025.', f: [
-    A('in', "In — habits, hobbies, people, places, choices", 1),
+  { id: 'inout', t: 'In and out', d: 'What gives you energy this year, and what you are leaving behind.', f: [
+    A('in', 'In — habits, hobbies, people, places, choices', 1),
     A('out', 'Out — bad habits, poor choices, things that drain me', 1)
   ]},
   { id: 'habitq', t: 'Habits audit', d: 'You do not rise to the level of your goals, you fall to the level of your systems.', f: [
@@ -401,7 +431,7 @@ const FOUNDATIONS = [
     A('r_evening', 'What could I do to relax and unwind at night, with less phone?'),
     A('r_feel', 'How do these make me feel — energised or drained, stressed or relaxed?')
   ]},
-  { id: 'glance', t: '2026 at a glance', d: 'The single page version of the year.', f: [
+  { id: 'glance', t: 'The year at a glance', d: 'The single page version of the year.', f: [
     A('g_quote', 'Quote for the year — this shows on your Today screen'),
     A('g_feel', 'How do I want to feel in 2026?'),
     L('g_forward', 'Looking forward to', 3),
@@ -475,8 +505,11 @@ const MONTH_REVIEW = [
   A('overcome', 'How will I overcome them?')
 ];
 
+const RANGE_HORIZONS = [['3y', 'Three years'], ['5y', 'Five years'], ['10y', 'Ten years'], ['life', 'A life\u2019s work']];
+
 const newGoal = kind => ({
-  id: uid(), kind, title: '', horizon: kind === 'long' ? 'long' : 'short',
+  id: uid(), kind, title: '', parent: '', targetYear: '',
+  horizon: kind === 'range' ? '5y' : (kind === 'long' ? 'long' : 'short'),
   what: '', why: '', when: '', how: '', reward: '', feeling: '', brainstorm: '',
   milestones: [], actions: [], outcome: '', completed: '',
   review: {}, created: iso(new Date())
@@ -547,12 +580,12 @@ function plainList(arr, ph, redraw) {
 
 /* ---- special: rate your life ---- */
 function rateLife() {
-  S.f.life = S.f.life || {};
+  YF().life = YF().life || {};
   const wrap = E('div');
   LIFE_AREAS.forEach((name, i) => {
     const k = 'a' + i;
-    S.f.life[k] = S.f.life[k] || {};
-    const rec = S.f.life[k];
+    YF().life[k] = YF().life[k] || {};
+    const rec = YF().life[k];
     const row = E('div', { style: 'margin-bottom:16px' });
     const hue = i * 45;
     row.append(E('div', { style: 'display:flex;align-items:center;gap:8px;margin-bottom:6px' }, [
@@ -583,9 +616,9 @@ function miFuture() {
   HORIZONS.forEach(([k, label]) => {
     const c = E('div', { style: 'margin-bottom:18px' });
     c.append(E('h3', { text: label }));
-    c.append(field('I will be', bindArea(S.f, 'fu_' + k + '_be')));
-    c.append(field('I will have', bindArea(S.f, 'fu_' + k + '_have')));
-    c.append(field('I will feel', bindArea(S.f, 'fu_' + k + '_feel')));
+    c.append(field('I will be', bindArea(YF(), 'fu_' + k + '_be')));
+    c.append(field('I will have', bindArea(YF(), 'fu_' + k + '_have')));
+    c.append(field('I will feel', bindArea(YF(), 'fu_' + k + '_feel')));
     wrap.append(c);
   });
   return wrap;
@@ -615,6 +648,9 @@ function habitRate(hid, days) {
 
 /* ===================== goal progress ===================== */
 function goalProgress(g) {
+  if (!g) return 0;
+  g.milestones = g.milestones || [];
+  g.actions = g.actions || [];
   let total = 0, done = 0;
   g.milestones.forEach(m => {
     total++; if (m.d) done++;
@@ -653,11 +689,11 @@ function remBtn(label, getItems) {
 function icsEsc(s) { return String(s || '').replace(/\\/g, '\\\\').replace(/([,;])/g, '\\$1').replace(/\n/g, '\\n'); }
 function icsStamp() { return new Date().toISOString().replace(/[-:]/g, '').split('.')[0] + 'Z'; }
 function buildIcs(events) {
-  const L = ['BEGIN:VCALENDAR', 'VERSION:2.0', 'PRODID:-//Goal Digger ' + YEAR + '//EN', 'CALSCALE:GREGORIAN'];
+  const L = ['BEGIN:VCALENDAR', 'VERSION:2.0', 'PRODID:-//Goal Digger//EN', 'CALSCALE:GREGORIAN'];
   const alarm = 'TRIGGER:PT' + parseInt((S.cfg.time || '09:00').split(':')[0], 10) + 'H';
   events.forEach((e, n) => {
     const d = e.date.replace(/-/g, ''), end = iso(addDays(parseIso(e.date), 1)).replace(/-/g, '');
-    L.push('BEGIN:VEVENT', 'UID:gd' + YEAR + '-' + n + '-' + d + '@goaldigger', 'DTSTAMP:' + icsStamp(),
+    L.push('BEGIN:VEVENT', 'UID:gd-' + n + '-' + d + '@goaldigger', 'DTSTAMP:' + icsStamp(),
       'DTSTART;VALUE=DATE:' + d, 'DTEND;VALUE=DATE:' + end, 'SUMMARY:' + icsEsc(e.title));
     if (e.notes) L.push('DESCRIPTION:' + icsEsc(e.notes));
     L.push('BEGIN:VALARM', alarm, 'ACTION:DISPLAY', 'DESCRIPTION:' + icsEsc(e.title), 'END:VALARM', 'END:VEVENT');
@@ -777,7 +813,8 @@ function todayBrief() {
 
 /* ===================== router ===================== */
 const now0 = new Date();
-let R = { tab: 'today', page: null, id: null, day: iso(now0), wk: isoWeek(now0), mo: now0.getMonth() };
+let R = { tab: 'today', page: null, id: null, day: iso(now0),
+          year: CURRENT_YEAR, wk: isoWeek(now0), mo: now0.getMonth() };
 
 function go(tab, page, id) { R.tab = tab; R.page = page || null; R.id = id || null; window.scrollTo(0, 0); render(); }
 
@@ -804,6 +841,19 @@ function render() {
   renderSpine(); renderTabs();
 }
 
+function yearPicker(onChange) {
+  const row = E('div', { style: 'display:flex;align-items:center;justify-content:center;gap:10px' });
+  const step = n => { R.year += n; R.wk = { y: R.year, w: Math.min(R.wk.w, weeksInYear(R.year)) };
+    if (onChange) onChange(); render(); };
+  row.append(E('button', { style: 'font-size:15px;color:var(--faint);padding:0 4px', text: '\u2039',
+    'aria-label': 'Previous year', onclick: () => step(-1) }));
+  row.append(E('span', { cls: 'eyebrow', style: 'color:' + (R.year === CURRENT_YEAR ? 'var(--mut)' : 'var(--acc)'),
+    text: R.year }));
+  row.append(E('button', { style: 'font-size:15px;color:var(--faint);padding:0 4px', text: '\u203A',
+    'aria-label': 'Next year', onclick: () => step(1) }));
+  return row;
+}
+
 /* ===================== data accessors ===================== */
 function week(y, w) {
   const k = weekKey(y, w);
@@ -828,16 +878,16 @@ function viewToday() {
   const v = E('div');
   const k = R.day, d = parseIso(k), wk = isoWeek(d), D = day(k);
   const isNow = sameDay(d, new Date());
-  const endOfYear = new Date(YEAR, 11, 31);
+  const endOfYear = new Date(d.getFullYear(), 11, 31);
   const left = Math.max(0, Math.round((endOfYear - new Date()) / 86400000));
   const step = n => { R.day = iso(addDays(d, n)); window.scrollTo(0, 0); render(); };
 
   v.append(E('div', { cls: 'nav' }, [
     E('button', { text: '\u2039', 'aria-label': 'Previous day', onclick: () => step(-1) }),
     E('div', { cls: 'mid' }, [
-      E('div', { cls: 'eyebrow', text: DOW[(d.getDay() + 6) % 7] + ' · Week ' + wk.w + ' of ' + weeksInYear(YEAR) }),
+      E('div', { cls: 'eyebrow', text: DOW[(d.getDay() + 6) % 7] + ' · Week ' + wk.w + ' of ' + weeksInYear(d.getFullYear()) }),
       E('h1', { style: 'font-size:31px', text: d.getDate() + ' ' + MONTHS[d.getMonth()] }),
-      isNow ? E('div', { cls: 'sub', text: left + ' days left in ' + YEAR })
+      isNow ? E('div', { cls: 'sub', text: left + ' days left in ' + d.getFullYear() })
             : E('button', {
                 style: 'display:block;width:100%;padding:1px 0;white-space:nowrap;color:var(--acc);' +
                        'font-family:var(--disp);font-size:11px;font-weight:600;letter-spacing:.16em;text-transform:uppercase',
@@ -893,7 +943,7 @@ function viewToday() {
   }
   v.append(ic);
 
-  const blank = !S.goals.length && !S.habits.length && !(S.f.purpose || S.f.values || S.f.success);
+  const blank = !S.goals.length && !S.habits.length && !(YF().purpose || YF().values || YF().success);
   if (blank) {
     const sc = E('div', { cls: 'card on' });
     sc.append(E('h2', { text: 'Start here' }));
@@ -906,9 +956,9 @@ function viewToday() {
     v.append(sc);
   }
 
-  if ((S.f.g_quote || '').trim()) {
+  if ((YF().g_quote || '').trim()) {
     v.append(E('div', { cls: 'card on' }, E('p', { cls: 'quote' }, [
-      S.f.g_quote.trim(), E('span', { text: 'My quote for the year' })
+      YF().g_quote.trim(), E('span', { text: 'My quote for the year' })
     ])));
   }
 
@@ -1049,7 +1099,7 @@ function viewWeek() {
   v.append(E('div', { cls: 'nav' }, [
     E('button', { text: '‹', 'aria-label': 'Previous week', onclick: () => { R.wk = isoWeek(addDays(mon, -7)); render(); } }),
     E('div', { cls: 'mid' }, [
-      E('div', { cls: 'eyebrow', text: 'Week ' + pad(w) }),
+      E('div', { cls: 'eyebrow', text: 'Week ' + pad(w) + (y !== CURRENT_YEAR ? ' · ' + y : '') }),
       E('div', { style: 'font-family:var(--disp);font-size:21px;text-transform:uppercase;letter-spacing:.04em;font-weight:700', text: span })
     ]),
     E('button', { text: '›', 'aria-label': 'Next week', onclick: () => { R.wk = isoWeek(addDays(mon, 7)); render(); } })
@@ -1182,25 +1232,27 @@ function viewWeek() {
 
 /* ===================== MONTH ===================== */
 function viewMonth() {
-  const m = R.mo, M = month(YEAR, m), v = E('div');
+  const m = R.mo, Y = R.year, M = month(Y, m), v = E('div');
   v.append(E('div', { cls: 'nav' }, [
-    E('button', { text: '‹', 'aria-label': 'Previous month', onclick: () => { R.mo = (m + 11) % 12; render(); } }),
+    E('button', { text: '‹', 'aria-label': 'Previous month',
+      onclick: () => { if (m === 0) { R.year--; R.mo = 11; } else R.mo = m - 1; render(); } }),
     E('div', { cls: 'mid' }, [
-      E('div', { cls: 'eyebrow', text: YEAR }),
+      yearPicker(),
       E('div', { style: 'font-family:var(--disp);font-size:27px;text-transform:uppercase;letter-spacing:.04em;font-weight:700;line-height:1', text: MONTHS[m] })
     ]),
-    E('button', { text: '›', 'aria-label': 'Next month', onclick: () => { R.mo = (m + 1) % 12; render(); } })
+    E('button', { text: '›', 'aria-label': 'Next month',
+      onclick: () => { if (m === 11) { R.year++; R.mo = 0; } else R.mo = m + 1; render(); } })
   ]));
 
   /* calendar */
   const cal = E('div', { cls: 'card' });
-  const first = new Date(YEAR, m, 1), startPad = (first.getDay() + 6) % 7;
-  const dim = new Date(YEAR, m + 1, 0).getDate();
+  const first = new Date(Y, m, 1), startPad = (first.getDay() + 6) % 7;
+  const dim = new Date(Y, m + 1, 0).getDate();
   const grid = E('div', { style: 'display:grid;grid-template-columns:repeat(7,1fr);gap:3px' });
   DOW.forEach(d => grid.append(E('div', { cls: 'eyebrow', style: 'text-align:center;font-size:9px', text: d[0] })));
   for (let i = 0; i < startPad; i++) grid.append(E('div'));
   for (let dn = 1; dn <= dim; dn++) {
-    const dt = new Date(YEAR, m, dn), dk = iso(dt);
+    const dt = new Date(Y, m, dn), dk = iso(dt);
     const hits = (S.hlog[dk] || []).length;
     const hasNote = (S.days[dk] && (S.days[dk].note || S.days[dk].tasks.length));
     const isToday = sameDay(dt, new Date());
@@ -1254,12 +1306,12 @@ function viewMonth() {
   /* weeks of this month */
   const wc = E('div', { cls: 'card' });
   wc.append(E('h2', { text: 'Weeks' }));
-  const total = weeksInYear(YEAR);
+  const total = weeksInYear(Y);
   for (let w = 1; w <= total; w++) {
-    if (weekMonth(YEAR, w) !== m) continue;
-    const W = S.weeks[weekKey(YEAR, w)], mon = mondayOf(YEAR, w);
+    if (weekMonth(Y, w) !== m) continue;
+    const W = S.weeks[weekKey(Y, w)], mon = mondayOf(Y, w);
     wc.append(E('button', { style: 'display:flex;width:100%;justify-content:space-between;align-items:center;gap:10px;padding:11px 0;border-top:1px solid var(--rule);text-align:left',
-      onclick: () => { R.wk = { y: YEAR, w }; go('week'); } }, [
+      onclick: () => { R.wk = { y: Y, w }; go('week'); } }, [
       E('span', {}, [E('span', { cls: 'eyebrow', text: 'W' + pad(w) + '  ' }),
         E('span', { style: 'font-size:14px', text: (W && W.focus ? W.focus.split('\n')[0].slice(0, 40) : mon.getDate() + ' ' + MONTHS[mon.getMonth()].slice(0, 3)) })]),
       E('span', { cls: 'pct', text: W && W.rate ? W.rate + '/10' : '–' })
@@ -1271,6 +1323,19 @@ function viewMonth() {
 
 
 /* ===================== GOALS ===================== */
+function childrenOf(id) { return S.goals.filter(g => g.parent === id); }
+function rangeProgress(g) {
+  const kids = childrenOf(g.id);
+  if (!kids.length) return goalProgress(g);
+  const own = g.milestones.length || g.actions.length ? goalProgress(g) : null;
+  const kidAvg = Math.round(kids.reduce((a, k) => a + (k.completed ? 100 : goalProgress(k)), 0) / kids.length);
+  return own === null ? kidAvg : Math.round((own + kidAvg) / 2);
+}
+function goalYear(g) {
+  if (g.targetYear) return Number(g.targetYear);
+  if (g.due) return Number(g.due.slice(0, 4));
+  return null;
+}
 function viewGoals() {
   const v = E('div');
   v.append(E('div', { cls: 'topbar' }, E('div', {}, [
@@ -1287,20 +1352,57 @@ function viewGoals() {
     if (!list.length) c.append(E('div', { cls: 'empty', text: note }));
     list.forEach(g => {
       const p = goalProgress(g);
+      const kids = kind === 'range' ? childrenOf(g.id) : [];
+      const shown = kind === 'range' ? rangeProgress(g) : p;
       c.append(E('button', { style: 'display:block;width:100%;text-align:left;padding:12px 0;border-top:1px solid var(--rule)',
         onclick: () => go('goals', null, g.id) }, [
         E('div', { style: 'display:flex;justify-content:space-between;gap:10px;align-items:baseline' }, [
           E('span', { style: g.completed ? 'color:var(--faint);text-decoration:line-through' : '', text: g.title || 'Untitled goal' }),
-          E('span', { cls: 'pct', text: g.completed ? 'Done' : p + '%' })
+          E('span', { cls: 'pct', text: g.completed ? 'Done' : shown + '%' })
         ]),
-        g.when ? E('div', { cls: 'pct', style: 'margin-top:3px', text: 'By ' + g.when }) : null,
-        E('div', { cls: 'bar' }, E('i', { style: 'width:' + (g.completed ? 100 : p) + '%' }))
+        E('div', { cls: 'pct', style: 'margin-top:3px', text: [
+          kind === 'range' ? ((RANGE_HORIZONS.find(h => h[0] === g.horizon) || [, ''])[1] +
+            (goalYear(g) ? ' · by ' + goalYear(g) : '')) : (g.when ? 'By ' + g.when : ''),
+          kids.length ? kids.length + ' goal' + (kids.length === 1 ? '' : 's') + ' feeding it' : '',
+          g.parent ? 'serves ' + ((S.goals.find(x => x.id === g.parent) || {}).title || 'a long-range goal') : ''
+        ].filter(Boolean).join(' · ') }),
+        E('div', { cls: 'bar' }, E('i', { style: 'width:' + (g.completed ? 100 : shown) + '%' }))
       ]));
     });
     return c;
   };
+  v.append(section('Long-range', 'range', 'Three years, ten years, a life\u2019s work. These outlast the planner year — this year\u2019s goals ladder up to them.'));
   v.append(section('Long-term goals', 'long', 'Six months and beyond. Three is plenty.'));
   v.append(section('Short-term goals', 'short', 'One to twelve weeks. These are the ones that build momentum.'));
+
+  /* the long view */
+  const dated = S.goals.filter(g => !g.completed && goalYear(g));
+  const lifelong = S.goals.filter(g => !g.completed && g.kind === 'range' && !goalYear(g));
+  if (dated.length || lifelong.length) {
+    const hc = E('div', { cls: 'card' });
+    hc.append(E('h2', { text: 'The long view' }));
+    const years = Array.from(new Set(dated.map(goalYear))).sort((a, b) => a - b);
+    years.forEach(y => {
+      const list = dated.filter(g => goalYear(g) === y);
+      hc.append(E('div', { style: 'display:flex;gap:12px;padding:10px 0;border-top:1px solid var(--rule)' }, [
+        E('div', { style: 'flex:none;width:46px' }, [
+          E('div', { style: 'font-family:var(--disp);font-size:19px;font-weight:700;line-height:1;color:' +
+            (y === CURRENT_YEAR ? 'var(--acc)' : 'var(--ink)'), text: y }),
+          E('div', { cls: 'pct', text: y === CURRENT_YEAR ? 'now' : '+' + (y - CURRENT_YEAR) })
+        ]),
+        E('div', { style: 'flex:1;min-width:0' }, list.map(g => E('button', {
+          style: 'display:block;width:100%;text-align:left;padding:2px 0;font-size:14.5px',
+          onclick: () => go('goals', null, g.id) },
+          [g.title || 'Untitled goal', g.kind === 'range' ? E('span', { cls: 'tag acc', style: 'margin-left:7px', text: 'range' }) : null])))
+      ]));
+    });
+    lifelong.forEach(g => hc.append(E('div', { style: 'display:flex;gap:12px;padding:10px 0;border-top:1px solid var(--rule)' }, [
+      E('div', { cls: 'eyebrow', style: 'flex:none;width:46px', text: 'Life' }),
+      E('button', { style: 'flex:1;text-align:left;font-size:14.5px', text: g.title || 'Untitled goal',
+        onclick: () => go('goals', null, g.id) })
+    ])));
+    v.append(hc);
+  }
 
   /* brain dump */
   const bc = E('div', { cls: 'card' });
@@ -1335,7 +1437,7 @@ function viewGoal(id) {
 
   v.append(E('button', { cls: 'btn ghost', text: '‹ Goals', onclick: () => go('goals') }));
   v.append(E('div', { style: 'margin:6px 0 14px' }, [
-    E('div', { cls: 'eyebrow', text: (long ? 'Long-term' : 'Short-term') + ' goal' }),
+    E('div', { cls: 'eyebrow', text: (g.kind === 'range' ? 'Long-range' : long ? 'Long-term' : 'Short-term') + ' goal' }),
     (() => {
       const ta = E('textarea', { rows: 1, placeholder: 'Name the goal',
         style: 'font-family:var(--disp);font-size:30px;line-height:1.02;text-transform:uppercase;font-weight:700;border:0;padding:4px 0',
@@ -1348,16 +1450,34 @@ function viewGoal(id) {
 
   /* type */
   const tc = E('div', { cls: 'card' });
-  const opts = long ? [['long', 'Long (6 months +)'], ['med', 'Medium (3–6 months)']]
-                    : [['short', 'Short (1–12 weeks)'], ['med', 'Medium (3–6 months)']];
+  const isRange = g.kind === 'range';
+  const opts = isRange ? RANGE_HORIZONS
+             : long ? [['long', 'Long (6 months +)'], ['med', 'Medium (3\u20136 months)']]
+                    : [['short', 'Short (1\u201312 weeks)'], ['med', 'Medium (3\u20136 months)']];
   const chips = E('div', { cls: 'chips' });
   opts.forEach(([k, label]) => chips.append(E('button', {
     cls: 'chip' + (g.horizon === k ? ' on' : ''), style: g.horizon === k ? 'background:var(--acc)' : '',
     text: label, onclick: () => { g.horizon = k; save(); render(); }
   })));
   tc.append(field('Type', chips));
-  tc.append(field('When do I want to achieve this by?', bindText(g, 'when', 'e.g. end of October')));
-  tc.append(field('Deadline date (for Calendar and Reminders)', bindText(g, 'due', '', 'date')));
+  if (isRange) {
+    tc.append(field('Target year', bindText(g, 'targetYear', 'e.g. ' + (CURRENT_YEAR + 5) + ', or leave blank for a life\u2019s work', 'number')));
+  } else {
+    tc.append(field('When do I want to achieve this by?', bindText(g, 'when', 'e.g. end of October')));
+    tc.append(field('Deadline date (for Calendar and Reminders)', bindText(g, 'due', '', 'date')));
+    const ranges = S.goals.filter(x => x.kind === 'range' && !x.completed);
+    if (ranges.length) {
+      const psel = E('select', { style: 'width:100%;padding:8px 0;border:0;border-bottom:1px solid var(--rule);background:transparent',
+        onchange: e => { g.parent = e.target.value; save(); render(); } });
+      psel.append(E('option', { value: '' }, 'Stands on its own'));
+      ranges.forEach(r => {
+        const o = E('option', { value: r.id }, r.title || 'Untitled long-range goal');
+        if (g.parent === r.id) o.setAttribute('selected', 'selected');
+        psel.append(o);
+      });
+      tc.append(field('Serves', psel));
+    }
+  }
   v.append(tc);
 
   /* the shape of it */
@@ -1433,6 +1553,29 @@ function viewGoal(id) {
     () => g.actions.filter(a => !a.d).map(a => ({ title: a.t, due: g.due })))));
   v.append(ac);
 
+  if (isRange) {
+    const kids = childrenOf(g.id);
+    const kc = E('div', { cls: 'card' });
+    kc.append(E('div', { cls: 'head' }, [E('h2', { text: 'Goals feeding this' }),
+      E('span', { cls: 'pct', text: rangeProgress(g) + '% overall' })]));
+    if (!kids.length) kc.append(E('div', { cls: 'empty',
+      text: 'Nothing laddering up yet. Open a long or short-term goal and set its \u201cServes\u201d to this one.' }));
+    const byYear = {};
+    kids.forEach(x => { const y = goalYear(x) || 'Undated'; (byYear[y] = byYear[y] || []).push(x); });
+    Object.keys(byYear).sort().forEach(y => {
+      kc.append(E('div', { style: 'display:flex;gap:12px;padding:10px 0;border-top:1px solid var(--rule)' }, [
+        E('div', { cls: 'eyebrow', style: 'flex:none;width:46px', text: y }),
+        E('div', { style: 'flex:1;min-width:0' }, byYear[y].map(x => E('button', {
+          style: 'display:flex;width:100%;justify-content:space-between;gap:8px;text-align:left;padding:2px 0;font-size:14.5px',
+          onclick: () => go('goals', null, x.id) }, [
+          E('span', { style: x.completed ? 'color:var(--faint);text-decoration:line-through' : '', text: x.title || 'Untitled goal' }),
+          E('span', { cls: 'pct', text: x.completed ? 'done' : goalProgress(x) + '%' })
+        ])))
+      ]));
+    });
+    v.append(kc);
+  }
+
   /* references */
   g.links = g.links || [];
   const lc = E('div', { cls: 'card' });
@@ -1470,7 +1613,7 @@ function viewGoal(id) {
 /* ===================== MORE ===================== */
 const MORE_PAGES = [
   ['month', 'This month', 'Monthly goals, rituals, calendar and review'],
-  ['found', 'My 2026', 'Values, purpose, success, vision, the year at a glance'],
+  ['found', 'My year', 'Values, purpose, success, vision, the year at a glance'],
   ['habits', 'Habits', 'Add, colour and retire the habits you track'],
   ['year', 'Year at a glance', 'Fifty-two weeks as one image'],
   ['reviews', 'Reviews', 'Mid-year reset and the yearly review'],
@@ -1502,6 +1645,7 @@ function viewMore() {
     E('div', { cls: 'eyebrow', text: 'The rest of the planner' }),
     E('h1', { text: 'More' })
   ])));
+  v.append(E('div', { style: 'margin:-6px 0 14px' }, yearPicker()));
   const c = E('div', { cls: 'card' });
   MORE_PAGES.forEach(([k, t, d]) => c.append(E('button', { cls: 'menu-item', onclick: () => go('more', k) },
     [E('span', {}, [t, E('small', { text: d })]), E('span', { style: 'color:var(--faint)', text: '›' })])));
@@ -1509,11 +1653,11 @@ function viewMore() {
 
   /* stats */
   const done = S.goals.filter(g => g.completed).length;
-  const rated = Object.values(S.weeks).filter(w => w.rate);
+  const rated = Object.entries(S.weeks).filter(([k, w]) => w.rate && k.slice(0, 4) === String(R.year)).map(([, w]) => w);
   const avg = rated.length ? (rated.reduce((a, w) => a + w.rate, 0) / rated.length).toFixed(1) : '–';
-  const written = Object.values(S.days).filter(d => (d.note || '').trim()).length;
+  const written = Object.entries(S.days).filter(([k, d]) => (d.note || '').trim() && k.slice(0, 4) === String(R.year)).length;
   const sc = E('div', { cls: 'card' });
-  sc.append(E('h2', { text: 'This year so far' }));
+  sc.append(E('h2', { text: R.year + ' so far' }));
   sc.append(E('div', { style: 'display:grid;grid-template-columns:repeat(4,1fr);gap:10px' }, [
     E('div', { cls: 'stat' }, [E('b', { text: done }), E('span', { text: 'Goals hit' })]),
     E('div', { cls: 'stat' }, [E('b', { text: rated.length }), E('span', { text: 'Weeks rated' })]),
@@ -1534,7 +1678,8 @@ function backBar(title) {
 /* ---------- foundations ---------- */
 function pageFound() {
   const v = E('div');
-  v.append(backBar('My 2026'));
+  v.append(backBar('My ' + R.year));
+  v.append(E('div', { style: 'margin:-6px 0 12px' }, yearPicker()));
   v.append(E('p', { cls: 'lede', text: 'The self-awareness work the rest of the year is built on. It does not need doing in one sitting.' }));
   const jump = E('div', { cls: 'chips', style: 'margin-bottom:16px' });
   FOUNDATIONS.forEach(s => jump.append(E('button', { cls: 'chip', style: 'font-size:12.5px;padding:6px 11px', text: s.t,
@@ -1546,7 +1691,7 @@ function pageFound() {
     if (s.d) c.append(E('p', { cls: 'lede', text: s.d }));
     if (s.special === 'ratelife') c.append(rateLife());
     else if (s.special === 'future') c.append(miFuture());
-    else c.append(renderFields(s.f, S.f));
+    else c.append(renderFields(s.f, YF()));
     v.append(c);
   });
   return v;
@@ -1598,14 +1743,15 @@ function pageHabits() {
 function pageYear() {
   const v = E('div');
   v.append(backBar('Year at a glance'));
+  v.append(E('div', { style: 'margin:-6px 0 12px' }, yearPicker()));
   v.append(E('p', { cls: 'lede', text: 'Each spoke is a week, coloured by its month and drawn to the score you gave it. Tap one to open that week.' }));
 
-  const total = weeksInYear(YEAR), C = 150, R0 = 52, NS = 'http://www.w3.org/2000/svg';
+  const total = weeksInYear(R.year), C = 150, R0 = 52, NS = 'http://www.w3.org/2000/svg';
   const svg = document.createElementNS(NS, 'svg');
   svg.setAttribute('viewBox', '0 0 300 300'); svg.setAttribute('class', 'wheel');
   const cur = isoWeek(new Date());
   for (let w = 1; w <= total; w++) {
-    const W = S.weeks[weekKey(YEAR, w)], m = weekMonth(YEAR, w);
+    const W = S.weeks[weekKey(R.year, w)], m = weekMonth(R.year, w);
     const a0 = (w - 1) / total * Math.PI * 2 - Math.PI / 2, a1 = w / total * Math.PI * 2 - Math.PI / 2;
     const a = (a0 + a1) / 2, len = W && W.rate ? 12 + W.rate * 8 : 6;
     const g = document.createElementNS(NS, 'line');
@@ -1615,7 +1761,7 @@ function pageYear() {
     g.setAttribute('stroke-width', 300 / total * 0.62); g.setAttribute('stroke-linecap', 'butt');
     if (w === cur.w) g.setAttribute('stroke', `hsl(${hueOf(m)},70%,38%)`);
     g.style.cursor = 'pointer';
-    g.addEventListener('click', () => { R.wk = { y: YEAR, w }; go('week'); });
+    g.addEventListener('click', () => { R.wk = { y: R.year, w }; go('week'); });
     svg.appendChild(g);
   }
   MONTHS.forEach((mo, i) => {
@@ -1631,14 +1777,14 @@ function pageYear() {
   const mid = document.createElementNS(NS, 'text');
   mid.setAttribute('x', C); mid.setAttribute('y', C + 8); mid.setAttribute('text-anchor', 'middle');
   mid.setAttribute('font-size', '30'); mid.setAttribute('font-family', 'var(--disp)');
-  mid.setAttribute('fill', '#15171B'); mid.textContent = YEAR;
+  mid.setAttribute('fill', '#15171B'); mid.textContent = R.year;
   svg.appendChild(mid);
 
   const c = E('div', { cls: 'card' }); c.append(svg); v.append(c);
 
   const gl = E('div', { cls: 'card' });
-  gl.append(E('h2', { text: '2026 at a glance' }));
-  gl.append(renderFields(FOUNDATIONS.find(s => s.id === 'glance').f, S.f));
+  gl.append(E('h2', { text: R.year + ' at a glance' }));
+  gl.append(renderFields(FOUNDATIONS.find(s => s.id === 'glance').f, YF()));
   v.append(gl);
   return v;
 }
@@ -1647,12 +1793,13 @@ function pageYear() {
 function pageReviews() {
   const v = E('div');
   v.append(backBar('Reviews'));
-  S.f.mid = S.f.mid || {}; S.f.yr = S.f.yr || {};
+  v.append(E('div', { style: 'margin:-6px 0 12px' }, yearPicker()));
+  YF().mid = YF().mid || {}; YF().yr = YF().yr || {};
 
   const mc = E('div', { cls: 'card' });
   mc.append(E('h2', { text: 'Monthly reviews' }));
   MONTHS.forEach((mo, i) => {
-    const M = S.months[monthKey(YEAR, i)];
+    const M = S.months[monthKey(R.year, i)];
     const filled = M && M.review && Object.values(M.review).some(x => x && String(x).trim());
     mc.append(E('button', { cls: 'menu-item', style: 'font-size:13px', onclick: () => { R.mo = i; go('month'); } }, [
       E('span', {}, [E('span', { style: `display:inline-block;width:8px;height:8px;border-radius:50%;background:hsl(${hueOf(i)},62%,50%);margin-right:9px` }), mo]),
@@ -1664,12 +1811,12 @@ function pageReviews() {
   const my = E('div', { cls: 'card on' });
   my.append(E('h2', { text: 'Mid-year review and reset' }));
   my.append(E('p', { cls: 'lede', text: 'Six months in: what has moved, what has not, and what the second half needs to look like.' }));
-  my.append(renderFields(MID_YEAR, S.f.mid));
+  my.append(renderFields(MID_YEAR, YF().mid));
   v.append(my);
 
   const yr = E('div', { cls: 'card' });
   yr.append(E('h2', { text: 'Yearly review' }));
-  yr.append(renderFields(YEAR_REVIEW, S.f.yr));
+  yr.append(renderFields(YEAR_REVIEW, YF().yr));
   v.append(yr);
   return v;
 }
@@ -1678,23 +1825,24 @@ function pageReviews() {
 function pageBudget() {
   const v = E('div');
   v.append(backBar('Budget'));
+  v.append(E('div', { style: 'margin:-6px 0 12px' }, yearPicker()));
   v.append(E('p', { cls: 'lede', text: 'Four buckets decide financial health: what you earn, invest, save and spend.' }));
-  S.f.sav = S.f.sav || {};
+  YF().sav = YF().sav || {};
   BUDGET.forEach(sec => {
     const c = E('div', { cls: 'card' });
     c.append(E('h2', { text: sec.t }));
-    c.append(renderFields(sec.f, S.f));
+    c.append(renderFields(sec.f, YF()));
     v.append(c);
   });
   const sc = E('div', { cls: 'card' });
   sc.append(E('h2', { text: 'Monthly saving goals' }));
   MONTHS.forEach((mo, i) => {
     const k = 'm' + i;
-    S.f.sav[k] = S.f.sav[k] || {};
+    YF().sav[k] = YF().sav[k] || {};
     sc.append(E('div', { style: 'display:flex;gap:10px;align-items:center;padding:8px 0;border-top:' + (i ? '1px solid var(--rule)' : '0') }, [
       E('span', { cls: 'eyebrow', style: `width:44px;color:hsl(${hueOf(i)},55%,44%)`, text: mo.slice(0, 3) }),
-      E('div', { style: 'flex:1' }, bindText(S.f.sav[k], 'goal', 'Saving goal')),
-      E('div', { style: 'width:88px' }, bindText(S.f.sav[k], 'amt', 'Actual'))
+      E('div', { style: 'flex:1' }, bindText(YF().sav[k], 'goal', 'Saving goal')),
+      E('div', { style: 'width:88px' }, bindText(YF().sav[k], 'amt', 'Actual'))
     ]));
   });
   v.append(sc);
@@ -1773,7 +1921,7 @@ function pageData() {
         try {
           const data = JSON.parse(r.result);
           if (!confirm('Replace everything in this planner with the backup?')) return;
-          S = Object.assign(DEFAULT(), data); save(true); go('today');
+          S = migrate(Object.assign(DEFAULT(), data)); save(true); go('today');
         } catch (err) { alert('That file could not be read as a backup.'); }
       };
       r.readAsText(f);
@@ -2033,25 +2181,10 @@ function toMarkdown() {
     const items = (arr || []).filter(x => x && String(x).trim());
     if (items.length) out.push('**' + label + '**\n' + items.map(x => '- ' + x).join('\n') + '\n');
   };
-  out.push('# Goal Digger ' + YEAR + '\n');
+  out.push('# Goal Digger\n');
   out.push('_Exported ' + iso(new Date()) + '_\n');
 
-  out.push('\n## My ' + YEAR + '\n');
-  FOUNDATIONS.forEach(s => {
-    out.push('\n### ' + s.t + '\n');
-    if (s.special === 'ratelife') {
-      LIFE_AREAS.forEach((n, i) => {
-        const r = (S.f.life || {})['a' + i] || {};
-        if (r.start || r.end) out.push('- ' + n + ': start ' + (r.start || '–') + ', end ' + (r.end || '–'));
-      });
-      out.push('');
-    } else if (s.special === 'future') {
-      HORIZONS.forEach(([k, l]) => {
-        ['be', 'have', 'feel'].forEach(p => put(l + ' — I will ' + p, S.f['fu_' + k + '_' + p]));
-      });
-    } else s.f.forEach(f => f.ty === 'list' ? putList(f.l, S.f[f.k]) : put(f.l, S.f[f.k]));
-  });
-
+  yearsPresent().forEach(Y => { exportYear(Y, out, put, putList); });
   out.push('\n## Goals\n');
   S.goals.forEach(g => {
     out.push('\n### ' + (g.title || 'Untitled') + ' (' + g.kind + '-term, ' + goalProgress(g) + '%)\n');
@@ -2071,59 +2204,6 @@ function toMarkdown() {
     if (g.completed) { put('Achieved', g.completed); put('Outcome', g.outcome); }
     Object.entries(g.review || {}).forEach(([k, val]) => put(k, val));
   });
-
-  out.push('\n## The year, week by week\n');
-  for (let w = 1; w <= weeksInYear(YEAR); w++) {
-    const W = S.weeks[weekKey(YEAR, w)];
-    const mon = mondayOf(YEAR, w);
-    const days = [];
-    for (let i = 0; i < 7; i++) {
-      const dk = iso(addDays(mon, i)), D = S.days[dk];
-      if (D && ((D.note || '').trim() || (D.intent || '').trim() || D.anchor || D.tasks.length || (D.grat || []).some(g => (g || '').trim()))) {
-        days.push('- **' + DOW[i] + ' ' + dk + '** ' +
-          ((D.intent || '').trim() ? '_' + D.intent.trim() + '_' + (anchorText(D.anchor) ? ' [' + anchorText(D.anchor) + ']' : '') + ' — ' : '') +
-          (D.note || '').trim().replace(/\n/g, ' ') +
-          D.tasks.filter(t => t.t).map(t => '\n    - [' + (t.d ? 'x' : ' ') + '] ' + t.t).join('') +
-          (D.grat || []).filter(g => (g || '').trim()).map(g => '\n    - grateful for: ' + g.trim()).join(''));
-      }
-    }
-    const hasW = W && (W.focus || W.notes || (W.wins || []).some(x => x) || W.rate);
-    if (!hasW && !days.length) continue;
-    out.push('\n### Week ' + pad(w) + ' — ' + mon.getDate() + ' ' + MONTHS[mon.getMonth()] + '\n');
-    if (W) {
-      put('Focus', W.focus); put('How I wanted to feel', W.feel);
-      putList('Weekly goals', W.goals);
-      const wg = [];
-      for (let i = 0; i < 7; i++) {
-        const dk2 = iso(addDays(mon, i)), DD = S.days[dk2];
-        (DD && DD.grat || []).filter(g => (g || '').trim()).forEach(g => wg.push(DOW[i] + ': ' + g.trim()));
-      }
-      putList('Gratitude gathered', wg);
-      putList('Grateful for, the week as a whole', W.grat);
-      if (W.todos && W.todos.length) out.push('**To do**\n' + W.todos.map(t => '- [' + (t.d ? 'x' : ' ') + '] ' + t.t).join('\n') + '\n');
-      put('Notes', W.notes); putList('Top three wins', W.wins);
-      if (W.rate) put('Week rated', W.rate + '/10');
-    }
-    if (days.length) out.push('**Days**\n' + days.join('\n') + '\n');
-  }
-
-  out.push('\n## Monthly reviews\n');
-  MONTHS.forEach((mo, i) => {
-    const M = S.months[monthKey(YEAR, i)];
-    if (!M) return;
-    const any = (M.review && Object.values(M.review).some(x => x && String(x).trim())) ||
-      M.goals.some(g => g.t) || (M.am || []).some(x => x) || (M.pm || []).some(x => x);
-    if (!any) return;
-    out.push('\n### ' + mo + '\n');
-    M.goals.forEach((g, n) => { if (g.t) { put('Goal ' + (n + 1), g.t); putList('Focus', g.focus); put('Notes', g.notes); } });
-    putList('Morning rituals', M.am); putList('Evening rituals', M.pm);
-    MONTH_REVIEW.forEach(f => f.ty === 'list' ? putList(f.l, (M.review || {})[f.k]) : put(f.l, (M.review || {})[f.k]));
-  });
-
-  out.push('\n## Mid-year review\n');
-  MID_YEAR.forEach(f => put(f.l, (S.f.mid || {})[f.k]));
-  out.push('\n## Yearly review\n');
-  YEAR_REVIEW.forEach(f => f.ty === 'list' ? putList(f.l, (S.f.yr || {})[f.k]) : put(f.l, (S.f.yr || {})[f.k]));
 
   out.push('\n## Habits\n');
   S.habits.forEach(h => {
@@ -2218,6 +2298,85 @@ function renderTabs() {
   });
 }
 
+/* everything that belongs to one particular year */
+function exportYear(Y, out, put, putList) {
+  Y = Number(Y);
+  const F = YF(Y);
+  const touched = Object.keys(F).length ||
+    Object.keys(S.weeks).some(k => k.slice(0, 4) === String(Y)) ||
+    Object.keys(S.days).some(k => k.slice(0, 4) === String(Y));
+  if (!touched) return;
+  out.push('\n# ' + Y + '\n');
+
+  out.push('\n## My ' + Y + '\n');
+  FOUNDATIONS.forEach(sec => {
+    out.push('\n### ' + sec.t + '\n');
+    if (sec.special === 'ratelife') {
+      LIFE_AREAS.forEach((n, i) => {
+        const r = (F.life || {})['a' + i] || {};
+        if (r.start || r.end) out.push('- ' + n + ': start ' + (r.start || '\u2013') + ', end ' + (r.end || '\u2013'));
+      });
+      out.push('');
+    } else if (sec.special === 'future') {
+      HORIZONS.forEach(([k, l]) => ['be', 'have', 'feel'].forEach(pt => put(l + ' \u2014 I will ' + pt, F['fu_' + k + '_' + pt])));
+    } else sec.f.forEach(f => f.ty === 'list' ? putList(f.l, F[f.k]) : put(f.l, F[f.k]));
+  });
+
+  out.push('\n## The year\n');
+  out.push('\n### Week by week\n');
+  for (let w = 1; w <= weeksInYear(Y); w++) {
+    const W = S.weeks[weekKey(Y, w)];
+    const mon = mondayOf(Y, w);
+    const days = [];
+    for (let i = 0; i < 7; i++) {
+      const dk = iso(addDays(mon, i)), D = S.days[dk];
+      if (D && ((D.note || '').trim() || (D.intent || '').trim() || D.anchor || D.tasks.length || (D.grat || []).some(g => (g || '').trim()))) {
+        days.push('- **' + DOW[i] + ' ' + dk + '** ' +
+          ((D.intent || '').trim() ? '_' + D.intent.trim() + '_' + (anchorText(D.anchor) ? ' [' + anchorText(D.anchor) + ']' : '') + ' — ' : '') +
+          (D.note || '').trim().replace(/\n/g, ' ') +
+          D.tasks.filter(t => t.t).map(t => '\n    - [' + (t.d ? 'x' : ' ') + '] ' + t.t).join('') +
+          (D.grat || []).filter(g => (g || '').trim()).map(g => '\n    - grateful for: ' + g.trim()).join(''));
+      }
+    }
+    const hasW = W && (W.focus || W.notes || (W.wins || []).some(x => x) || W.rate);
+    if (!hasW && !days.length) continue;
+    out.push('\n#### Week ' + pad(w) + ' — ' + mon.getDate() + ' ' + MONTHS[mon.getMonth()] + '\n');
+    if (W) {
+      put('Focus', W.focus); put('How I wanted to feel', W.feel);
+      putList('Weekly goals', W.goals);
+      const wg = [];
+      for (let i = 0; i < 7; i++) {
+        const dk2 = iso(addDays(mon, i)), DD = S.days[dk2];
+        (DD && DD.grat || []).filter(g => (g || '').trim()).forEach(g => wg.push(DOW[i] + ': ' + g.trim()));
+      }
+      putList('Gratitude gathered', wg);
+      putList('Grateful for, the week as a whole', W.grat);
+      if (W.todos && W.todos.length) out.push('**To do**\n' + W.todos.map(t => '- [' + (t.d ? 'x' : ' ') + '] ' + t.t).join('\n') + '\n');
+      put('Notes', W.notes); putList('Top three wins', W.wins);
+      if (W.rate) put('Week rated', W.rate + '/10');
+    }
+    if (days.length) out.push('**Days**\n' + days.join('\n') + '\n');
+  }
+
+  out.push('\n### Monthly reviews\n');
+  MONTHS.forEach((mo, i) => {
+    const M = S.months[monthKey(Y, i)];
+    if (!M) return;
+    const any = (M.review && Object.values(M.review).some(x => x && String(x).trim())) ||
+      M.goals.some(g => g.t) || (M.am || []).some(x => x) || (M.pm || []).some(x => x);
+    if (!any) return;
+    out.push('\n#### ' + mo + '\n');
+    M.goals.forEach((g, n) => { if (g.t) { put('Goal ' + (n + 1), g.t); putList('Focus', g.focus); put('Notes', g.notes); } });
+    putList('Morning rituals', M.am); putList('Evening rituals', M.pm);
+    MONTH_REVIEW.forEach(f => f.ty === 'list' ? putList(f.l, (M.review || {})[f.k]) : put(f.l, (M.review || {})[f.k]));
+  });
+
+  out.push('\n### Mid-year review\n');
+  MID_YEAR.forEach(f => put(f.l, (F.mid || {})[f.k]));
+  out.push('\n### Yearly review\n');
+  YEAR_REVIEW.forEach(f => f.ty === 'list' ? putList(f.l, (F.yr || {})[f.k]) : put(f.l, (F.yr || {})[f.k]));
+
+}
 
 
 /* ===================== the eight limbs ===================== */
@@ -2766,7 +2925,7 @@ async function cloudPush() {
   syncing = true;
   try {
     const body = JSON.stringify({
-      description: 'Goal Digger ' + YEAR + ' — planner data',
+      description: 'Goal Digger — planner data',
       public: false,
       files: { [GIST_FILE]: { content: payloadForCloud() } }
     });
@@ -2809,8 +2968,8 @@ async function cloudPull(mode) {
   try {
     const remote = await cloudFetch();
     if (!remote) throw new Error('nothing there');
-    S = mode === 'replace' ? Object.assign(DEFAULT(), remote, { cfg: S.cfg })
-                           : mergeState(remote, S);
+    S = mode === 'replace' ? migrate(Object.assign(DEFAULT(), remote, { cfg: S.cfg }))
+                           : mergeState(migrate(remote), S);
     lastSync = new Date().toISOString();
     save(true);
     toast(mode === 'replace' ? 'Replaced with the cloud copy' : 'Merged');
@@ -2864,12 +3023,17 @@ function mergeState(remote, local) {
     entries: mergeById((local.studio || {}).entries, (remote.studio || {}).entries, rn, true)
   };
 
-  /* long-form prose: fill gaps either way, newer side wins a real collision */
-  out.f = rn ? Object.assign({}, local.f, remote.f) : Object.assign({}, remote.f, local.f);
-  ['mid', 'yr', 'life', 'sav'].forEach(k => {
-    if (!remote.f || !remote.f[k]) return;
-    out.f[k] = rn ? Object.assign({}, (local.f || {})[k], remote.f[k])
-                  : Object.assign({}, remote.f[k], (local.f || {})[k]);
+  /* long-form prose, year by year: fill gaps either way, newer side wins a real collision */
+  out.years = {};
+  const yrs = new Set([].concat(Object.keys(local.years || {}), Object.keys(remote.years || {})));
+  yrs.forEach(y => {
+    const lf = ((local.years || {})[y] || {}).f || {}, rf = ((remote.years || {})[y] || {}).f || {};
+    const f = rn ? Object.assign({}, lf, rf) : Object.assign({}, rf, lf);
+    ['mid', 'yr', 'life', 'sav'].forEach(k => {
+      if (!lf[k] && !rf[k]) return;
+      f[k] = rn ? Object.assign({}, lf[k], rf[k]) : Object.assign({}, rf[k], lf[k]);
+    });
+    out.years[y] = { f };
   });
 
   out.agenda = rn ? (remote.agenda || local.agenda) : local.agenda;
