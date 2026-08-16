@@ -526,6 +526,25 @@ function checkList(arr, ph, redraw) {
   return box;
 }
 
+/* a numbered, growable list of plain strings */
+function plainList(arr, ph, redraw) {
+  const box = E('div');
+  arr.forEach((t, i) => {
+    const ta = E('textarea', { rows: 1, placeholder: ph || '', style: 'flex:1;min-width:0',
+      oninput: e => { grow(e.target); arr[i] = e.target.value; save(); } });
+    ta.value = t || '';
+    requestAnimationFrame(() => grow(ta));
+    box.append(E('div', { cls: 'linebox' }, [
+      E('span', { cls: 'num', text: (i + 1) + '.' }), ta,
+      E('button', { cls: 'x', text: '\u00d7', 'aria-label': 'Remove',
+        onclick: () => { arr.splice(i, 1); save(); redraw(); } })
+    ]));
+  });
+  box.append(E('button', { cls: 'btn ghost', style: 'margin-top:8px', text: '+ Add',
+    onclick: () => { arr.push(''); save(); redraw(); } }));
+  return box;
+}
+
 /* ---- special: rate your life ---- */
 function rateLife() {
   S.f.life = S.f.life || {};
@@ -791,7 +810,8 @@ function week(y, w) {
   return S.weeks[k] = S.weeks[k] || { focus: '', feel: '', grat: [], goals: [], todos: [], notes: '', wins: [], rate: null };
 }
 function day(d) {
-  const r = S.days[d] = S.days[d] || { intent: '', anchor: null, note: '', tasks: [] };
+  const r = S.days[d] = S.days[d] || { intent: '', anchor: null, note: '', tasks: [], grat: [] };
+  if (!r.grat) r.grat = [];
   if (r.intent === undefined) r.intent = '';
   return r;
 }
@@ -928,6 +948,14 @@ function viewToday() {
   tc.append(field(isNow ? 'Notes on today' : 'Notes', areaWithLinks(D, 'note', 'What happened, what you noticed, what you made. Paste links freely.', 1, S.links)));
   v.append(tc);
 
+  /* gratitude */
+  const gc2 = E('div', { cls: 'card' });
+  gc2.append(E('h2', { text: 'Grateful for' }));
+  if (!D.grat.length) gc2.append(E('p', { cls: 'lede', style: 'margin:0',
+    text: 'One or two is plenty. These gather into the week, so a thin day still adds to something.' }));
+  gc2.append(plainList(D.grat, 'Something from today', render));
+  v.append(gc2);
+
   /* from the phone */
   const ag = agendaFor(k);
   const ac = E('div', { cls: 'card' });
@@ -1034,11 +1062,34 @@ function viewWeek() {
 
   const c2 = E('div', { cls: 'card' });
   W.grat = W.grat || []; W.goals = W.goals || [];
-  const g1 = E('div'); for (let i = 0; i < 3; i++) g1.append(bindLine(W.grat, i, '', true));
-  c2.append(field('Grateful for', g1));
   const g2 = E('div'); for (let i = 0; i < 3; i++) g2.append(bindLine(W.goals, i, '', true));
   c2.append(field('Weekly goals', g2));
   v.append(c2);
+
+  /* gratitude gathered from the days */
+  const gath = E('div', { cls: 'card' });
+  let gcount = 0;
+  const gbody = E('div');
+  for (let i = 0; i < 7; i++) {
+    const dt = addDays(mon, i), dk = iso(dt);
+    const items = ((S.days[dk] || {}).grat || []).filter(x => (x || '').trim());
+    if (!items.length) continue;
+    gcount += items.length;
+    const row = E('div', { style: 'display:flex;gap:11px;padding:9px 0;border-top:1px solid var(--rule)' });
+    row.append(E('button', { cls: 'dn', style: 'text-align:left;flex:none',
+      onclick: () => { R.day = dk; go('today'); } }, [DOW[i], E('b', { text: pad(dt.getDate()) })]));
+    row.append(E('div', { style: 'flex:1;min-width:0' },
+      items.map(t => E('div', { style: 'font-size:14.5px;padding:1px 0', text: t }))));
+    gbody.append(row);
+  }
+  gath.append(E('div', { cls: 'head' }, [E('h2', { text: 'Gratitude' }),
+    gcount ? E('span', { cls: 'pct', text: gcount + ' this week' }) : null]));
+  if (gcount) gath.append(gbody);
+  else gath.append(E('div', { cls: 'empty', text: 'Nothing captured yet. Add a line on any day and it gathers here.' }));
+  gath.append(E('div', { cls: 'rule' }));
+  const g1 = E('div'); for (let i = 0; i < 3; i++) g1.append(bindLine(W.grat, i, '', true));
+  gath.append(field('For the week as a whole', g1));
+  v.append(gath);
 
   /* habit grid */
   if (habitsFor().length) {
@@ -2028,11 +2079,12 @@ function toMarkdown() {
     const days = [];
     for (let i = 0; i < 7; i++) {
       const dk = iso(addDays(mon, i)), D = S.days[dk];
-      if (D && ((D.note || '').trim() || (D.intent || '').trim() || D.anchor || D.tasks.length)) {
+      if (D && ((D.note || '').trim() || (D.intent || '').trim() || D.anchor || D.tasks.length || (D.grat || []).some(g => (g || '').trim()))) {
         days.push('- **' + DOW[i] + ' ' + dk + '** ' +
           ((D.intent || '').trim() ? '_' + D.intent.trim() + '_' + (anchorText(D.anchor) ? ' [' + anchorText(D.anchor) + ']' : '') + ' — ' : '') +
           (D.note || '').trim().replace(/\n/g, ' ') +
-          D.tasks.filter(t => t.t).map(t => '\n    - [' + (t.d ? 'x' : ' ') + '] ' + t.t).join(''));
+          D.tasks.filter(t => t.t).map(t => '\n    - [' + (t.d ? 'x' : ' ') + '] ' + t.t).join('') +
+          (D.grat || []).filter(g => (g || '').trim()).map(g => '\n    - grateful for: ' + g.trim()).join(''));
       }
     }
     const hasW = W && (W.focus || W.notes || (W.wins || []).some(x => x) || W.rate);
@@ -2040,7 +2092,14 @@ function toMarkdown() {
     out.push('\n### Week ' + pad(w) + ' — ' + mon.getDate() + ' ' + MONTHS[mon.getMonth()] + '\n');
     if (W) {
       put('Focus', W.focus); put('How I wanted to feel', W.feel);
-      putList('Weekly goals', W.goals); putList('Grateful for', W.grat);
+      putList('Weekly goals', W.goals);
+      const wg = [];
+      for (let i = 0; i < 7; i++) {
+        const dk2 = iso(addDays(mon, i)), DD = S.days[dk2];
+        (DD && DD.grat || []).filter(g => (g || '').trim()).forEach(g => wg.push(DOW[i] + ': ' + g.trim()));
+      }
+      putList('Gratitude gathered', wg);
+      putList('Grateful for, the week as a whole', W.grat);
       if (W.todos && W.todos.length) out.push('**To do**\n' + W.todos.map(t => '- [' + (t.d ? 'x' : ' ') + '] ' + t.t).join('\n') + '\n');
       put('Notes', W.notes); putList('Top three wins', W.wins);
       if (W.rate) put('Week rated', W.rate + '/10');
