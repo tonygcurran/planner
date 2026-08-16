@@ -537,21 +537,25 @@ function renderFields(defs, store) {
 }
 
 /* checkable, growable list: array of {t,d} */
-function checkList(arr, ph, redraw) {
+function checkList(arr, ph, redraw, opts) {
+  opts = opts || {};
   const box = E('div');
   arr.forEach((it, i) => {
-    box.append(E('div', { cls: 'list-item' }, [
+    const row = E('div');
+    row.append(E('div', { cls: 'list-item' }, [
       E('button', { cls: 'box' + (it.d ? ' on' : ''), 'aria-label': 'Toggle',
         html: '<svg viewBox="0 0 12 12"><polyline points="1.5,6.5 4.5,9.5 10.5,2.5"/></svg>',
-        onclick: () => { it.d = !it.d; save(); redraw(); } }),
+        onclick: () => { it.d = !it.d; syncTaskToGoal(it); save(); redraw(); } }),
       E('div', { cls: 'txt' }, (() => {
         const ta = E('textarea', { rows: 1, cls: it.d ? 'done' : '',
           oninput: e => { grow(e.target); it.t = e.target.value; save(); } });
         ta.value = it.t; requestAnimationFrame(() => grow(ta)); return ta;
       })()),
-      E('button', { cls: 'x', text: '×', 'aria-label': 'Remove',
+      E('button', { cls: 'x', text: '\u00d7', 'aria-label': 'Remove',
         onclick: () => { arr.splice(i, 1); save(); redraw(); } })
     ]));
+    if (opts.link) row.append(goalLink(it, redraw));
+    box.append(row);
   });
   box.append(E('button', { cls: 'btn ghost', text: '+ Add', style: 'margin-top:8px',
     onclick: () => { arr.push({ t: '', d: false }); save(); redraw(); } }));
@@ -861,10 +865,14 @@ function candidates(y, w) {
   openTasks(null, iso(addDays(mon, -1))).slice(-12).forEach(o =>
     out.push({ text: o.t.t, from: 'left over · ' + o.dk, src: o, kind: 'day' }));
   S.goals.filter(g => !g.completed).forEach(g => {
-    (g.actions || []).forEach(a => { if (!a.d && (a.t || '').trim())
-      out.push({ text: a.t, from: 'goal · ' + (g.title || 'untitled'), kind: 'goal' }); });
-    (g.milestones || []).forEach(m => { if (!m.d && (m.t || '').trim())
-      out.push({ text: m.t, from: 'milestone · ' + (g.title || 'untitled'), kind: 'goal' }); });
+    (g.actions || []).forEach(a => { if (!a.d && (a.t || '').trim()) {
+      if (!a.id) a.id = uid();
+      out.push({ text: a.t, from: 'goal · ' + (g.title || 'untitled'), kind: 'goal', g: g.id, ga: a.id });
+    }});
+    (g.milestones || []).forEach(m => { if (!m.d && (m.t || '').trim()) {
+      if (!m.id) m.id = uid();
+      out.push({ text: m.t, from: 'milestone · ' + (g.title || 'untitled'), kind: 'goal', g: g.id, ga: m.id });
+    }});
   });
   (S.dump || []).forEach(d => { if ((d.t || '').trim())
     out.push({ text: d.t, from: 'brain dump', kind: 'dump' }); });
@@ -874,6 +882,77 @@ function candidates(y, w) {
     if (!k || seen.has(k)) return false;
     seen.add(k); return true;
   });
+}
+
+
+/* ===================== linking work to goals ===================== */
+let linkingItem = null;
+
+function goalTitle(id) { const g = S.goals.find(x => x.id === id); return g ? (g.title || 'Untitled goal') : ''; }
+
+/* the chip under a task, and the picker it opens */
+function goalLink(item, redraw) {
+  const wrap = E('div', { style: 'padding:0 0 6px 29px' });
+  const open = S.goals.filter(g => !g.completed);
+  const chosen = item.g ? S.goals.find(g => g.id === item.g) : null;
+
+  wrap.append(E('button', {
+    cls: chosen ? 'tag acc' : 'tag',
+    style: chosen ? '' : 'border-style:dashed;color:var(--faint)',
+    text: chosen ? (chosen.title || 'Untitled goal') : '+ goal',
+    onclick: () => { linkingItem = linkingItem === item ? null : item; redraw(); }
+  }));
+  if (chosen && item.ga) wrap.append(E('span', { cls: 'pct', style: 'margin-left:7px', text: 'ticks the goal too' }));
+
+  if (linkingItem === item) {
+    const list = E('div', { style: 'margin-top:8px;border-left:2px solid var(--rule);padding-left:10px' });
+    if (!open.length) list.append(E('div', { cls: 'empty', text: 'No open goals yet.' }));
+    list.append(E('button', { cls: 'menu-item', style: 'font-size:12px;color:var(--mut);padding:8px 0',
+      onclick: () => { delete item.g; delete item.ga; linkingItem = null; save(true); redraw(); } }, 'No goal'));
+    open.forEach(g => list.append(E('button', {
+      cls: 'menu-item', style: 'font-size:13px;padding:9px 0',
+      onclick: () => { item.g = g.id; linkingItem = null; save(true); redraw(); }
+    }, [g.title || 'Untitled goal', E('span', { cls: 'pct', text: goalProgress(g) + '%' })])));
+    wrap.append(list);
+  }
+  return wrap;
+}
+
+/* every task anywhere that points at a goal */
+function tasksForGoal(id) {
+  const out = [];
+  Object.keys(S.days).sort().forEach(dk => (S.days[dk].tasks || []).forEach(t => {
+    if (t.g === id) out.push({ where: dk, t });
+  }));
+  Object.keys(S.weeks).sort().forEach(wk => (S.weeks[wk].todos || []).forEach(t => {
+    if (t.g === id) out.push({ where: wk.replace('-W', ' week '), t });
+  }));
+  return out;
+}
+
+/* how this week's effort is actually distributed */
+function weekEffort(y, w) {
+  const mon = mondayOf(y, w), tally = {}, none = { n: 0, done: 0 };
+  const add = t => {
+    if (!(t.t || '').trim()) return;
+    if (!t.g) { none.n++; if (t.d) none.done++; return; }
+    const r = tally[t.g] = tally[t.g] || { n: 0, done: 0 };
+    r.n++; if (t.d) r.done++;
+  };
+  for (let i = 0; i < 7; i++) ((S.days[iso(addDays(mon, i))] || {}).tasks || []).forEach(add);
+  ((S.weeks[weekKey(y, w)] || {}).todos || []).forEach(add);
+  return { tally, none };
+}
+
+/* ticking a task that came from a goal action ticks the action too */
+function syncTaskToGoal(item) {
+  if (!item.g || !item.ga) return;
+  const g = S.goals.find(x => x.id === item.g);
+  if (!g) return;
+  const a = (g.actions || []).find(x => x.id === item.ga);
+  if (a) a.d = item.d;
+  const m = (g.milestones || []).find(x => x.id === item.ga);
+  if (m) m.d = item.d;
 }
 
 
@@ -1057,7 +1136,7 @@ function viewToday() {
   /* today's list */
   const tc = E('div', { cls: 'card' });
   tc.append(E('h2', { text: isNow ? "Today's list" : 'List for this day' }));
-  tc.append(checkList(D.tasks, 'Nothing planned. Add the one thing that would make today count.', render));
+  tc.append(checkList(D.tasks, 'Nothing planned. Add the one thing that would make today count.', render, { link: true }));
   tc.append(E('div', { cls: 'btnrow' }, remBtn('Send to Reminders',
     () => D.tasks.filter(t => !t.d).map(t => ({ title: t.t, due: k })))));
   tc.append(E('div', { cls: 'rule' }));
@@ -1306,7 +1385,7 @@ function viewWeek() {
 
   const c3 = E('div', { cls: 'card' });
   c3.append(E('h2', { text: 'Things to do' }));
-  c3.append(checkList(W.todos, 'Nothing listed for this week yet.', render));
+  c3.append(checkList(W.todos, 'Nothing listed for this week yet.', render, { link: true }));
 
   /* what is still open in the days of this week */
   const wkKey = weekKey(y, w);
@@ -1345,7 +1424,7 @@ function viewWeek() {
         ]),
         E('button', { cls: 'tag acc', text: 'Add', onclick: () => {
           if (c.kind === 'day' && c.src) pullIntoWeek(c.src, wkKey);
-          else { W.todos.push({ t: c.text, d: false }); save(true); }
+          else { W.todos.push({ t: c.text, d: false, g: c.g || undefined, ga: c.ga || undefined }); save(true); }
           render();
         }})
       ])));
@@ -1358,6 +1437,38 @@ function viewWeek() {
   c3.append(E('div', { cls: 'rule' }));
   c3.append(field('Notes', areaWithLinks(W, 'notes', '', 1, S.links)));
   v.append(c3);
+
+  /* where the week's effort actually went */
+  const eff = weekEffort(y, w);
+  const totalTasks = Object.values(eff.tally).reduce((a, r) => a + r.n, 0) + eff.none.n;
+  if (totalTasks) {
+    const ec = E('div', { cls: 'card' });
+    ec.append(E('div', { cls: 'head' }, [E('h2', { text: 'Where the week went' }),
+      E('span', { cls: 'pct', text: totalTasks + ' item' + (totalTasks === 1 ? '' : 's') })]));
+    const bar = E('div', { style: 'display:flex;height:10px;border-radius:2px;overflow:hidden;background:var(--paper)' });
+    const ids = Object.keys(eff.tally);
+    ids.forEach((gid, i) => bar.append(E('div', {
+      style: `width:${eff.tally[gid].n / totalTasks * 100}%;background:hsl(${(i * 67 + 20) % 360},58%,52%)` })));
+    if (eff.none.n) bar.append(E('div', { style: `width:${eff.none.n / totalTasks * 100}%;background:var(--rule)` }));
+    ec.append(bar);
+    ids.forEach((gid, i) => {
+      const r = eff.tally[gid];
+      ec.append(E('button', { style: 'display:flex;width:100%;gap:9px;align-items:center;padding:8px 0;border-top:1px solid var(--rule);text-align:left',
+        onclick: () => go('goals', null, gid) }, [
+        E('span', { style: `width:9px;height:9px;border-radius:50%;flex:none;background:hsl(${(i * 67 + 20) % 360},58%,52%)` }),
+        E('span', { style: 'flex:1;min-width:0;font-size:14.5px', text: goalTitle(gid) }),
+        E('span', { cls: 'pct', text: r.done + '/' + r.n })
+      ]));
+    });
+    if (eff.none.n) ec.append(E('div', { style: 'display:flex;gap:9px;align-items:center;padding:8px 0;border-top:1px solid var(--rule)' }, [
+      E('span', { style: 'width:9px;height:9px;border-radius:50%;flex:none;background:var(--rule)' }),
+      E('span', { style: 'flex:1;font-size:14.5px;color:var(--mut)', text: 'Unattached' }),
+      E('span', { cls: 'pct', text: eff.none.done + '/' + eff.none.n })
+    ]));
+    if (eff.none.n > totalTasks * 0.6) ec.append(E('p', { cls: 'lede', style: 'margin-top:10px',
+      text: 'Most of this week is unattached to any goal. Sometimes that is exactly right \u2014 worth noticing either way.' }));
+    v.append(ec);
+  }
 
   const c4 = E('div', { cls: 'card' });
   W.wins = W.wins || [];
@@ -1712,6 +1823,26 @@ function viewGoal(id) {
       ]));
     });
     v.append(kc);
+  }
+
+  /* work logged against this goal */
+  const linked = tasksForGoal(g.id);
+  if (linked.length) {
+    const tc2 = E('div', { cls: 'card' });
+    const doneN = linked.filter(x => x.t.d).length;
+    tc2.append(E('div', { cls: 'head' }, [E('h2', { text: 'Work toward this' }),
+      E('span', { cls: 'pct', text: doneN + ' of ' + linked.length + ' done' })]));
+    linked.slice(-12).reverse().forEach(x => tc2.append(E('div', { cls: 'list-item' }, [
+      E('button', { cls: 'box' + (x.t.d ? ' on' : ''), style: 'flex:none',
+        html: '<svg viewBox="0 0 12 12"><polyline points="1.5,6.5 4.5,9.5 10.5,2.5"/></svg>',
+        onclick: () => { x.t.d = !x.t.d; syncTaskToGoal(x.t); save(true); render(); } }),
+      E('div', { cls: 'txt' }, [
+        E('div', { style: 'font-size:14.5px' + (x.t.d ? ';color:var(--faint);text-decoration:line-through' : ''), text: x.t.t }),
+        E('div', { cls: 'pct', text: x.where })
+      ])
+    ])));
+    if (linked.length > 12) tc2.append(E('div', { cls: 'pct', style: 'margin-top:8px', text: 'showing the last 12' }));
+    v.append(tc2);
   }
 
   /* references */
@@ -2572,7 +2703,8 @@ function exportYear(Y, out, put, putList) {
         days.push('- **' + DOW[i] + ' ' + dk + '** ' +
           ((D.intent || '').trim() ? '_' + D.intent.trim() + '_' + (anchorText(D.anchor) ? ' [' + anchorText(D.anchor) + ']' : '') + ' — ' : '') +
           (D.note || '').trim().replace(/\n/g, ' ') +
-          D.tasks.filter(t => t.t).map(t => '\n    - [' + (t.d ? 'x' : ' ') + '] ' + t.t).join('') +
+          D.tasks.filter(t => t.t).map(t => '\n    - [' + (t.d ? 'x' : ' ') + '] ' + t.t +
+            (t.g && goalTitle(t.g) ? ' _(' + goalTitle(t.g) + ')_' : '')).join('') +
           (D.grat || []).filter(g => (g || '').trim()).map(g => '\n    - grateful for: ' + g.trim()).join(''));
       }
     }
@@ -2589,7 +2721,8 @@ function exportYear(Y, out, put, putList) {
       }
       putList('Gratitude gathered', wg);
       putList('Grateful for, the week as a whole', W.grat);
-      if (W.todos && W.todos.length) out.push('**To do**\n' + W.todos.map(t => '- [' + (t.d ? 'x' : ' ') + '] ' + t.t).join('\n') + '\n');
+      if (W.todos && W.todos.length) out.push('**To do**\n' + W.todos.map(t => '- [' + (t.d ? 'x' : ' ') + '] ' + t.t +
+        (t.g && goalTitle(t.g) ? ' _(' + goalTitle(t.g) + ')_' : '')).join('\n') + '\n');
       put('Notes', W.notes); putList('Top three wins', W.wins);
       if (W.rate) put('Week rated', W.rate + '/10');
     }
@@ -3152,6 +3285,81 @@ const sessionsOfWork = id => S.studio.entries.filter(e => !e.draft && e.work ===
 const evidenceSessions = () => S.studio.entries.filter(e => !e.draft && e.key);
 
 /* ---------- works ---------- */
+let bulkWork = null, bulkFrom = '', bulkTo = '', bulkTheme = '', bulkOnly = false;
+
+/* sessions matching the current filters, minus ones already on this work */
+function bulkPool(wid) {
+  return S.studio.entries.filter(e => {
+    if (e.draft) return false;
+    if (e.work === wid) return false;
+    if (bulkOnly && e.work) return false;
+    if (bulkFrom && e.date < bulkFrom) return false;
+    if (bulkTo && e.date > bulkTo) return false;
+    if (bulkTheme && !(e.themes || []).includes(bulkTheme)) return false;
+    return true;
+  }).sort((a, b) => a.date < b.date ? -1 : 1);
+}
+
+function bulkPanel(w) {
+  const box = E('div', { style: 'margin-top:12px;border-top:1px solid var(--rule);padding-top:12px' });
+  box.append(E('h3', { text: 'Attach existing sessions' }));
+  const filters = E('div', { style: 'display:flex;gap:10px;flex-wrap:wrap' });
+  const mk = (label, get, set) => {
+    const i = E('input', { type: 'date', oninput: e => { set(e.target.value); redrawBulk(w, box); } });
+    i.value = get();
+    return E('div', { style: 'flex:1;min-width:120px' }, [E('label', { cls: 'fl', text: label }), i]);
+  };
+  filters.append(mk('From', () => bulkFrom, v2 => bulkFrom = v2));
+  filters.append(mk('To', () => bulkTo, v2 => bulkTo = v2));
+  box.append(filters);
+
+  const themes = themeCounts().map(t => t[0]);
+  if (themes.length) {
+    const chips = E('div', { cls: 'chips', style: 'margin-top:10px' });
+    themes.forEach(t => chips.append(E('button', {
+      cls: 'chip' + (bulkTheme === t ? ' on' : ''), style: bulkTheme === t ? 'background:var(--acc)' : '',
+      text: t, onclick: () => { bulkTheme = bulkTheme === t ? '' : t; redrawBulk(w, box); } })));
+    box.append(chips);
+  }
+  box.append(E('div', { style: 'display:flex;gap:10px;align-items:center;margin-top:10px' }, [
+    E('button', { cls: 'box' + (bulkOnly ? ' on' : ''), style: 'flex:none;margin-top:0',
+      html: '<svg viewBox="0 0 12 12"><polyline points="1.5,6.5 4.5,9.5 10.5,2.5"/></svg>',
+      onclick: () => { bulkOnly = !bulkOnly; redrawBulk(w, box); } }),
+    E('span', { style: 'font-size:14px', text: 'Only sessions not yet on a work' })
+  ]));
+
+  const listWrap = E('div');
+  box.append(listWrap);
+  box._list = listWrap;
+  drawBulkList(w, listWrap);
+  return box;
+}
+function redrawBulk(w, box) { drawBulkList(w, box._list); }
+function drawBulkList(w, wrap) {
+  clear(wrap);
+  const pool = bulkPool(w.id);
+  wrap.append(E('div', { cls: 'pct', style: 'margin-top:12px',
+    text: pool.length + ' session' + (pool.length === 1 ? '' : 's') + ' match' }));
+  if (!pool.length) return;
+  pool.slice(0, 40).forEach(e => wrap.append(E('div', { cls: 'list-item' }, [
+    E('div', { cls: 'txt' }, [
+      E('div', { style: 'font-size:14px', text: e.title || 'Untitled session' }),
+      E('div', { cls: 'pct', text: e.date + (e.work ? ' \u00b7 currently on ' + ((workOf(e.work) || {}).title || 'another work') : '') })
+    ]),
+    E('button', { cls: 'tag acc', text: 'Attach', onclick: () => { e.work = w.id; save(true); render(); } })
+  ])));
+  if (pool.length > 40) wrap.append(E('div', { cls: 'pct', text: 'showing the first 40' }));
+  wrap.append(E('button', { cls: 'btn fill', style: 'margin-top:12px',
+    text: 'Attach all ' + pool.length, onclick: () => {
+      const moving = pool.filter(e => e.work).length;
+      const msg = 'Attach ' + pool.length + ' sessions to \u201c' + (w.title || 'this work') + '\u201d?' +
+        (moving ? ' ' + moving + ' will be moved off another work.' : '');
+      if (!confirm(msg)) return;
+      pool.forEach(e => e.work = w.id);
+      save(true); bulkWork = null; render();
+    }}));
+}
+
 function studioWorks() {
   studioStore();
   const v = E('div');
@@ -3187,11 +3395,50 @@ function studioWorks() {
       text: ss.length + ' session' + (ss.length === 1 ? '' : 's') + ' \u00b7 ' +
             ss.filter(e => e.key).length + ' marked as evidence \u00b7 ' +
             S.studio.claims.filter(x => x.work === w.id).length + ' findings' }));
+    c.append(E('div', { cls: 'btnrow' }, [
+      E('button', { cls: 'btn', text: bulkWork === w.id ? 'Close' : 'Attach sessions',
+        onclick: () => { bulkWork = bulkWork === w.id ? null : w.id; render(); } })
+    ]));
+    if (bulkWork === w.id) c.append(bulkPanel(w));
     v.append(c);
   });
 
   v.append(E('button', { cls: 'btn fill', text: '+ New work',
     onclick: () => { S.studio.works.push(newWork()); save(true); render(); } }));
+
+  /* goals are often the same object under another name */
+  const already = new Set(S.studio.works.map(w => w.fromGoal).filter(Boolean));
+  const cands = S.goals.filter(g => !already.has(g.id) && (g.title || '').trim());
+  if (cands.length) {
+    const gc = E('div', { cls: 'card', style: 'margin-top:14px' });
+    gc.append(E('h2', { text: 'Make a work from a goal' }));
+    gc.append(E('p', { cls: 'lede', text: 'A named series usually exists twice \u2014 once as a goal, once as the work itself. This copies the title across and offers to bring its sessions with it.' }));
+    cands.forEach(g => {
+      const linked = S.studio.entries.filter(e => !e.draft && e.goal === g.id);
+      gc.append(E('div', { cls: 'list-item' }, [
+        E('div', { cls: 'txt' }, [
+          E('div', { style: 'font-size:14.5px', text: g.title }),
+          E('div', { cls: 'pct', text: (g.kind === 'range' ? 'long-range goal' : g.kind + '-term goal') +
+            (linked.length ? ' \u00b7 ' + linked.length + ' session' + (linked.length === 1 ? '' : 's') + ' already linked' : '') })
+        ]),
+        E('button', { cls: 'tag acc', text: 'Make work', onclick: () => {
+          const w = Object.assign(newWork(), {
+            title: g.title,
+            kind: g.kind === 'short' ? 'single' : 'body',
+            statement: (g.what || '').trim(),
+            fromGoal: g.id
+          });
+          S.studio.works.push(w);
+          if (linked.length && confirm('Attach its ' + linked.length + ' session' +
+              (linked.length === 1 ? '' : 's') + ' to this work as well?')) {
+            linked.forEach(e => e.work = w.id);
+          }
+          save(true); render();
+        }})
+      ]));
+    });
+    v.append(gc);
+  }
   return v;
 }
 
