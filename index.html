@@ -2097,8 +2097,10 @@ function pageBudget() {
   const v = E('div');
   v.append(backBar('Budget'));
   v.append(E('div', { style: 'margin:-6px 0 12px' }, yearPicker()));
-  v.append(E('p', { cls: 'lede', text: 'Four buckets decide financial health: what you earn, invest, save and spend.' }));
+  v.append(E('p', { cls: 'lede', text: 'What comes in and goes out each month, what you own and owe, and the four buckets \u2014 earn, invest, save, spend.' }));
+  financeSections(v);
   YF().sav = YF().sav || {};
+  v.append(E('h2', { style: 'margin:22px 0 10px', text: 'The year ahead' }));
   BUDGET.forEach(sec => {
     const c = E('div', { cls: 'card' });
     c.append(E('h2', { text: sec.t }));
@@ -2542,6 +2544,198 @@ function pageLoose() {
 }
 
 
+/* ===================== balance sheet and cashflow ===================== */
+/* Assets, liabilities and recurring flows carry across years, so they live
+   outside the per-year budget prompts. */
+
+const FREQ = [['m', 'monthly', 1], ['w', 'weekly', 52 / 12], ['f', 'fortnightly', 26 / 12],
+              ['q', 'quarterly', 1 / 3], ['y', 'yearly', 1 / 12]];
+const freqMul = k => (FREQ.find(f => f[0] === k) || FREQ[0])[2];
+const freqName = k => (FREQ.find(f => f[0] === k) || FREQ[0])[1];
+
+function finance() {
+  S.finance = S.finance || { assets: [], liabs: [], flows: [], snaps: [] };
+  ['assets', 'liabs', 'flows', 'snaps'].forEach(k => S.finance[k] = S.finance[k] || []);
+  return S.finance;
+}
+const num = v => { const n = parseFloat(String(v || '').replace(/[^0-9.\-]/g, '')); return isFinite(n) ? n : 0; };
+const money = n => (n < 0 ? '\u2212' : '') + Math.abs(Math.round(n)).toLocaleString();
+const sumOf = arr => arr.reduce((a, x) => a + num(x.v), 0);
+const monthlyOf = (arr, kind) => arr.filter(x => x.k === kind)
+  .reduce((a, x) => a + num(x.v) * freqMul(x.f), 0);
+
+/* one editable line: a name, an amount, optionally a frequency */
+function moneyRow(arr, i, redraw, withFreq) {
+  const x = arr[i];
+  const name = E('input', { type: 'text', placeholder: 'Name',
+    oninput: e => { x.n = e.target.value; save(); } });
+  name.value = x.n || '';
+  const amt = E('input', { type: 'text', inputmode: 'decimal', placeholder: '0',
+    style: 'text-align:right',
+    oninput: e => { x.v = e.target.value; save(); },
+    onblur: () => redraw() });
+  amt.value = x.v || '';
+  const row = E('div', { style: 'padding:7px 0;border-top:1px solid var(--rule)' });
+  row.append(E('div', { style: 'display:flex;gap:9px;align-items:center' }, [
+    E('div', { style: 'flex:1;min-width:0' }, name),
+    E('div', { style: 'width:88px' }, amt),
+    E('button', { cls: 'x', text: '\u00d7', 'aria-label': 'Remove',
+      onclick: () => { arr.splice(i, 1); save(); redraw(); } })
+  ]));
+  if (withFreq) {
+    const chips = E('div', { cls: 'chips', style: 'margin-top:5px' });
+    FREQ.forEach(([k, label]) => chips.append(E('button', {
+      cls: 'chip' + (x.f === k ? ' on' : ''),
+      style: (x.f === k ? 'background:var(--acc);' : '') + 'font-size:11px;padding:4px 9px',
+      text: label, onclick: () => { x.f = k; save(); redraw(); } })));
+    row.append(chips);
+  }
+  return row;
+}
+
+function financeSections(v) {
+  const F = finance();
+
+  /* ---- what comes in and goes out ---- */
+  const inM = monthlyOf(F.flows, 'in'), outM = monthlyOf(F.flows, 'out');
+  const surplus = inM - outM;
+
+  const fc = E('div', { cls: 'card on' });
+  fc.append(E('h2', { text: 'Every month' }));
+  fc.append(E('div', { style: 'display:grid;grid-template-columns:repeat(3,1fr);gap:10px' }, [
+    E('div', { cls: 'stat' }, [E('b', { text: money(inM) }), E('span', { text: 'In' })]),
+    E('div', { cls: 'stat' }, [E('b', { text: money(outM) }), E('span', { text: 'Out' })]),
+    E('div', { cls: 'stat' }, [E('b', { style: 'color:' + (surplus < 0 ? '#B23A3A' : 'var(--acc)'),
+      text: money(surplus) }), E('span', { text: surplus < 0 ? 'Short' : 'Left over' })])
+  ]));
+  if (inM > 0) {
+    fc.append(E('div', { cls: 'bar', style: 'margin-top:12px' },
+      E('i', { style: 'width:' + Math.min(100, Math.round(outM / inM * 100)) + '%;background:' +
+        (surplus < 0 ? '#B23A3A' : 'var(--acc)') })));
+    fc.append(E('div', { cls: 'pct', style: 'margin-top:6px',
+      text: Math.round(outM / inM * 100) + '% of what comes in goes out \u00b7 saving ' +
+        Math.max(0, Math.round(surplus / inM * 100)) + '%' }));
+  }
+
+  [['in', 'Coming in', 'Salary, commissions, royalties, grants'],
+   ['out', 'Going out', 'Rent or mortgage, studio, insurance, subscriptions, materials']]
+  .forEach(([kind, label, hint]) => {
+    const box = E('div', { style: 'margin-top:16px' });
+    box.append(E('h3', { text: label }));
+    const rows = F.flows.map((x, i) => [x, i]).filter(([x]) => x.k === kind);
+    if (!rows.length) box.append(E('div', { cls: 'empty', text: hint }));
+    rows.forEach(([, i]) => box.append(moneyRow(F.flows, i, render, true)));
+    const sub = monthlyOf(F.flows, kind);
+    if (rows.length) box.append(E('div', { cls: 'pct', style: 'text-align:right;padding-top:7px',
+      text: money(sub) + ' a month' }));
+    box.append(E('button', { cls: 'btn ghost', style: 'margin-top:8px', text: '+ Add',
+      onclick: () => { F.flows.push({ id: uid(), n: '', v: '', f: 'm', k: kind }); save(); render(); } }));
+    fc.append(box);
+  });
+  v.append(fc);
+
+  /* ---- what you own and owe ---- */
+  const A = sumOf(F.assets), L = sumOf(F.liabs), net = A - L;
+  const bc = E('div', { cls: 'card' });
+  bc.append(E('h2', { text: 'What you own and owe' }));
+  bc.append(E('div', { style: 'display:grid;grid-template-columns:repeat(3,1fr);gap:10px' }, [
+    E('div', { cls: 'stat' }, [E('b', { text: money(A) }), E('span', { text: 'Assets' })]),
+    E('div', { cls: 'stat' }, [E('b', { text: money(L) }), E('span', { text: 'Liabilities' })]),
+    E('div', { cls: 'stat' }, [E('b', { style: 'color:' + (net < 0 ? '#B23A3A' : 'var(--acc)'), text: money(net) }),
+      E('span', { text: 'Net' })])
+  ]));
+
+  [['assets', 'Assets', 'Cash, super, property, equipment, unsold work'],
+   ['liabs', 'Liabilities', 'Mortgage, loans, cards, study debt']]
+  .forEach(([key, label, hint]) => {
+    const box = E('div', { style: 'margin-top:16px' });
+    box.append(E('h3', { text: label }));
+    if (!F[key].length) box.append(E('div', { cls: 'empty', text: hint }));
+    F[key].forEach((x, i) => box.append(moneyRow(F[key], i, render)));
+    if (F[key].length) box.append(E('div', { cls: 'pct', style: 'text-align:right;padding-top:7px',
+      text: money(sumOf(F[key])) }));
+    box.append(E('button', { cls: 'btn ghost', style: 'margin-top:8px', text: '+ Add',
+      onclick: () => { F[key].push({ id: uid(), n: '', v: '' }); save(); render(); } }));
+    bc.append(box);
+  });
+
+  /* ---- the trend ---- */
+  const ym = iso(new Date()).slice(0, 7);
+  const already = F.snaps.find(s => s.ym === ym);
+  bc.append(E('div', { cls: 'rule' }));
+  if (F.snaps.length > 1) {
+    const NS = 'http://www.w3.org/2000/svg';
+    const vals = F.snaps.map(s => s.net), lo = Math.min(...vals, 0), hi = Math.max(...vals, 1);
+    const svg = document.createElementNS(NS, 'svg');
+    svg.setAttribute('viewBox', '0 0 300 70');
+    svg.setAttribute('style', 'width:100%;height:70px;display:block');
+    const pts = F.snaps.map((s, i) => {
+      const x = F.snaps.length === 1 ? 0 : i / (F.snaps.length - 1) * 296 + 2;
+      const y = 66 - (s.net - lo) / (hi - lo || 1) * 60;
+      return x.toFixed(1) + ',' + y.toFixed(1);
+    }).join(' ');
+    const line = document.createElementNS(NS, 'polyline');
+    line.setAttribute('points', pts);
+    line.setAttribute('fill', 'none');
+    line.setAttribute('stroke', 'hsl(var(--hue),68%,44%)');
+    line.setAttribute('stroke-width', '2');
+    svg.appendChild(line);
+    bc.append(svg);
+    const first = F.snaps[0], last = F.snaps[F.snaps.length - 1];
+    bc.append(E('div', { cls: 'pct', text: first.ym + ' to ' + last.ym + ' \u00b7 ' +
+      (last.net >= first.net ? 'up ' : 'down ') + money(Math.abs(last.net - first.net)) }));
+  }
+  bc.append(E('div', { cls: 'btnrow' }, [
+    E('button', { cls: 'btn' + (already ? '' : ' fill'),
+      text: already ? 'Update this month\u2019s figure' : 'Record this month',
+      onclick: () => {
+        const rec = { ym, assets: A, liabs: L, net };
+        const i = F.snaps.findIndex(s => s.ym === ym);
+        i < 0 ? F.snaps.push(rec) : F.snaps[i] = rec;
+        F.snaps.sort((a, b) => a.ym < b.ym ? -1 : 1);
+        save(true); render();
+      }})
+  ]));
+  bc.append(E('p', { cls: 'lede', style: 'margin-top:10px',
+    text: 'Recording once a month builds the only line that matters here \u2014 the direction of travel, not the number on any given day.' }));
+  v.append(bc);
+}
+
+/* the balance sheet in the export */
+function financeMarkdown(out, put) {
+  const F = finance();
+  if (!F.flows.length && !F.assets.length && !F.liabs.length) return;
+  out.push('\n## Money\n');
+  const inM = monthlyOf(F.flows, 'in'), outM = monthlyOf(F.flows, 'out');
+  if (F.flows.length) {
+    out.push('**Every month**  \nIn ' + money(inM) + ', out ' + money(outM) +
+      ', leaving ' + money(inM - outM) + '.\n');
+    ['in', 'out'].forEach(k => {
+      const rows = F.flows.filter(x => x.k === k && (x.n || x.v));
+      if (!rows.length) return;
+      out.push('**' + (k === 'in' ? 'Coming in' : 'Going out') + '**');
+      rows.forEach(x => out.push('- ' + (x.n || 'Unnamed') + ' — ' + money(num(x.v)) + ' ' + freqName(x.f)));
+      out.push('');
+    });
+  }
+  if (F.assets.length || F.liabs.length) {
+    out.push('**Balance sheet**  \nAssets ' + money(sumOf(F.assets)) + ', liabilities ' +
+      money(sumOf(F.liabs)) + ', net ' + money(sumOf(F.assets) - sumOf(F.liabs)) + '.\n');
+    [['assets', 'Assets'], ['liabs', 'Liabilities']].forEach(([k, label]) => {
+      if (!F[k].length) return;
+      out.push('**' + label + '**');
+      F[k].forEach(x => out.push('- ' + (x.n || 'Unnamed') + ' — ' + money(num(x.v))));
+      out.push('');
+    });
+  }
+  if (F.snaps.length > 1) {
+    out.push('**Net position over time**');
+    F.snaps.forEach(s => out.push('- ' + s.ym + ': ' + money(s.net)));
+    out.push('');
+  }
+}
+
+
 /* ===================== markdown export ===================== */
 function toMarkdown() {
   const out = [];
@@ -2613,6 +2807,8 @@ function toMarkdown() {
       l.items.forEach(it => out.push('- [' + (it.d ? 'x' : ' ') + '] ' + it.t));
     });
   }
+  financeMarkdown(out, put);
+
   const srcs = allSources();
   if (srcs.length) {
     out.push('\n## Sources\n');
@@ -3806,6 +4002,17 @@ function mergeState(remote, local) {
   out.dump = mergeById(local.dump, remote.dump, rn);
   out.habits = mergeById(local.habits, remote.habits, rn);
   out.links = mergeById(local.links, remote.links, rn);
+  const lf = local.finance || {}, rf = remote.finance || {};
+  out.finance = {
+    assets: mergeById(lf.assets, rf.assets, rn),
+    liabs: mergeById(lf.liabs, rf.liabs, rn),
+    flows: mergeById(lf.flows, rf.flows, rn),
+    snaps: (() => {
+      const m = new Map((lf.snaps || []).map(x => [x.ym, x]));
+      (rf.snaps || []).forEach(x => { if (!m.has(x.ym) || rn) m.set(x.ym, x); });
+      return Array.from(m.values()).sort((a, b) => a.ym < b.ym ? -1 : 1);
+    })()
+  };
   out.studio = {
     project: rn && (remote.studio || {}).project && remote.studio.project.title
       ? remote.studio.project : (local.studio || {}).project,
