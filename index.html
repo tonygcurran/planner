@@ -562,6 +562,7 @@ function checkList(arr, ph, redraw, opts) {
         onclick: () => { arr.splice(i, 1); save(); redraw(); } })
     ]));
     if (opts.link) row.append(goalLink(it, redraw));
+    if (opts.move) row.append(moveControl(arr, i, opts.move, redraw));
     box.append(row);
   });
   box.append(E('button', { cls: 'btn ghost', text: '+ Add', style: 'margin-top:8px',
@@ -882,6 +883,48 @@ function pullWeekTodoToDay(y, w, idx, destIso) {
   save(true);
 }
 
+/* take a planned task out of a project so it exists in one place only */
+function takeProjectTask(pid, taskId) {
+  const pr = projectById(pid);
+  if (!pr) return null;
+  const i = (pr.tasks || []).findIndex(t => t.id === taskId);
+  if (i < 0) return null;
+  const [it] = pr.tasks.splice(i, 1);
+  return { t: it.t, d: false, p: pr.id, g: (pr.goals || [])[0] || undefined };
+}
+
+/* everything that could be pulled into a day, grouped by where it lives */
+function pullGroups(y, w) {
+  const groups = [];
+  const wkTodos = weekTodosFor(y, w);
+  if (wkTodos.length) groups.push({ label: "This week's list", items: wkTodos.map(o => ({
+    text: o.t.t, sub: o.t.g ? goalTitle(o.t.g) : '',
+    take: () => { const W = S.weeks[weekKey(y, w)]; const [it] = W.todos.splice(o.i, 1); return it; }
+  }))});
+
+  openProjects().forEach(pr => {
+    const open = (pr.tasks || []).filter(t => !t.d && (t.t || '').trim());
+    if (!open.length) return;
+    open.forEach(t => { if (!t.id) t.id = uid(); });
+    groups.push({ label: pr.title || 'Untitled project', note: dueLabel(pr.due), items: open.map(t => ({
+      text: t.t, sub: (pr.goals || []).length ? goalTitle(pr.goals[0]) : '',
+      take: () => takeProjectTask(pr.id, t.id)
+    }))});
+  });
+
+  const gItems = [];
+  S.goals.filter(g => !g.completed).forEach(g => {
+    (g.actions || []).forEach(a => {
+      if (a.d || !(a.t || '').trim()) return;
+      if (!a.id) a.id = uid();
+      gItems.push({ text: a.t, sub: g.title || 'untitled goal',
+        take: () => ({ t: a.t, d: false, g: g.id, ga: a.id }) });
+    });
+  });
+  if (gItems.length) groups.push({ label: 'Goal actions', items: gItems });
+  return groups;
+}
+
 /* things that could fill an empty week: work already waiting somewhere */
 function candidates(y, w) {
   const mon = mondayOf(y, w), sun = addDays(mon, 6);
@@ -905,7 +948,7 @@ function candidates(y, w) {
     if (!t.id) t.id = uid();
     out.push({ text: t.t, from: 'project \u00b7 ' + (pr.title || 'untitled') +
       (pr.due ? ' \u00b7 ' + dueLabel(pr.due) : ''), kind: 'project',
-      p: pr.id, g: (pr.goals || [])[0] || undefined });
+      p: pr.id, g: (pr.goals || [])[0] || undefined, taskId: t.id });
   }));
   (S.dump || []).forEach(d => { if ((d.t || '').trim())
     out.push({ text: d.t, from: 'brain dump', kind: 'dump' }); });
@@ -1015,9 +1058,90 @@ function syncTaskToGoal(item) {
 }
 
 
+/* ===================== pushing a task elsewhere ===================== */
+let movingItem = null;
+
+function moveDayTask(arr, i, destIso) {
+  const [it] = arr.splice(i, 1);
+  if (!it) return;
+  day(destIso).tasks.push(it);
+  save(true);
+}
+function moveDayTaskToWeek(arr, i, y, w) {
+  const [it] = arr.splice(i, 1);
+  if (!it) return;
+  week(y, w).todos.push(it);
+  save(true);
+}
+
+function moveControl(arr, i, fromIso, redraw) {
+  const item = arr[i];
+  const wrap = E('div', { style: 'padding:0 0 6px 29px' });
+  wrap.append(E('button', {
+    cls: 'tag', style: 'border-style:dashed;color:var(--faint)', text: '\u2192 push',
+    onclick: () => { movingItem = movingItem === item ? null : item; redraw(); }
+  }));
+  if (movingItem !== item) return wrap;
+
+  const from = parseIso(fromIso);
+  const thisWk = isoWeek(from), nextWk = isoWeek(addDays(mondayOf(thisWk.y, thisWk.w), 7));
+  const panel = E('div', { style: 'margin-top:8px;border-left:2px solid var(--acc);padding-left:10px' });
+
+  const done = () => { movingItem = null; redraw(); };
+
+  panel.append(E('h3', { style: 'margin:4px 0 6px', text: 'Push to' }));
+  panel.append(E('div', { cls: 'chips' }, [
+    E('button', { cls: 'chip', text: 'Tomorrow',
+      onclick: () => { moveDayTask(arr, i, iso(addDays(from, 1))); done(); } }),
+    E('button', { cls: 'chip', text: "This week's list",
+      onclick: () => { moveDayTaskToWeek(arr, i, thisWk.y, thisWk.w); done(); } }),
+    E('button', { cls: 'chip', text: "Next week's list",
+      onclick: () => { moveDayTaskToWeek(arr, i, nextWk.y, nextWk.w); done(); } })
+  ]));
+
+  [[thisWk, 'This week'], [nextWk, 'Next week']].forEach(([wkk, label]) => {
+    const mon = mondayOf(wkk.y, wkk.w);
+    panel.append(E('h3', { style: 'margin:14px 0 5px', text: label }));
+    const grid = E('div', { style: 'display:grid;grid-template-columns:repeat(7,1fr);gap:3px' });
+    for (let d2 = 0; d2 < 7; d2++) {
+      const dt = addDays(mon, d2), dk = iso(dt), here = dk === fromIso;
+      const past = dt < new Date(new Date().toDateString());
+      grid.append(E('button', {
+        style: 'padding:7px 0;border:1px solid ' + (here ? 'var(--acc)' : 'var(--rule)') +
+               ';border-radius:2px;background:' + (here ? 'var(--wash)' : '#fff') +
+               ';display:flex;flex-direction:column;align-items:center;gap:1px' +
+               (past && !here ? ';opacity:.45' : ''),
+        'aria-label': dk,
+        onclick: () => { if (here) { done(); return; } moveDayTask(arr, i, dk); done(); }
+      }, [
+        E('span', { cls: 'eyebrow', style: 'font-size:9px', text: DOW[d2][0] }),
+        E('span', { cls: 'mono', style: 'font-size:13px' + (here ? ';color:var(--acc);font-weight:700' : ''),
+          text: dt.getDate() })
+      ]));
+    }
+    panel.append(grid);
+  });
+  panel.append(E('button', { cls: 'btn ghost', style: 'margin-top:10px', text: 'Cancel', onclick: done }));
+  wrap.append(panel);
+  return wrap;
+}
+
+
 /* ===================== router ===================== */
 const now0 = new Date();
-let pullOpen = false;
+let pullOpen = false, weekPullOpen = false;
+
+/* move or copy a pooled candidate into a week's list, depending on where it lives */
+function takeCandidate(c, W, wkKey) {
+  if (c.kind === 'day' && c.src) { pullIntoWeek(c.src, wkKey); return; }
+  if (c.kind === 'project' && c.p && c.taskId) {
+    const item = takeProjectTask(c.p, c.taskId);
+    if (item) { W.todos.push(item); save(true); }
+    return;
+  }
+  W.todos.push({ t: c.text, d: false, g: c.g || undefined, ga: c.ga || undefined, p: c.p || undefined });
+  save(true);
+}
 let R = { tab: 'today', page: null, id: null, day: iso(now0),
           year: CURRENT_YEAR, wk: isoWeek(now0), mo: now0.getMonth() };
 
@@ -1196,40 +1320,45 @@ function viewToday() {
   /* today's list */
   const tc = E('div', { cls: 'card' });
   tc.append(E('h2', { text: isNow ? "Today's list" : 'List for this day' }));
-  const wkTodos = weekTodosFor(wk.y, wk.w);
-  tc.append(checkList(D.tasks, wkTodos.length
-    ? 'Nothing planned yet. Pull something off the week\u2019s list below, or write the one thing that would make today count.'
-    : 'Nothing planned. Add the one thing that would make today count.', render, { link: true }));
+  const groups = pullGroups(wk.y, wk.w);
+  const pullCount = groups.reduce((a, g) => a + g.items.length, 0);
+  tc.append(checkList(D.tasks, pullCount
+    ? 'Nothing planned yet. Pull something waiting elsewhere, or write the one thing that would make today count.'
+    : 'Nothing planned. Add the one thing that would make today count.', render, { link: true, move: k }));
 
-  /* the week's list, offered rather than retyped */
-  if (wkTodos.length) {
+  if (pullCount) {
     const pw = E('div', { style: 'margin-top:10px' });
     pw.append(E('button', { cls: 'btn ghost', style: 'padding-left:0',
-      text: (pullOpen ? '\u2212' : '+') + ' Pull from the week (' + wkTodos.length + ')',
+      text: (pullOpen ? '\u2212' : '+') + ' Pull in work (' + pullCount + ')',
       onclick: () => { pullOpen = !pullOpen; render(); } }));
     if (pullOpen) {
       const list = E('div', { style: 'border-left:2px solid var(--rule);padding-left:11px;margin-top:6px' });
-      wkTodos.forEach(o => {
-        const g = o.t.g ? S.goals.find(x => x.id === o.t.g) : null;
-        list.append(E('div', { cls: 'list-item' }, [
+      groups.forEach(gr => {
+        list.append(E('h3', { style: 'margin:12px 0 2px', text: gr.label + (gr.note ? ' \u00b7 ' + gr.note : '') }));
+        gr.items.forEach(it => list.append(E('div', { cls: 'list-item' }, [
           E('div', { cls: 'txt' }, [
-            E('div', { style: 'font-size:14.5px', text: o.t.t }),
-            g ? E('div', { cls: 'pct', text: g.title || 'a goal' }) : null
+            E('div', { style: 'font-size:14.5px', text: it.text }),
+            it.sub ? E('div', { cls: 'pct', text: it.sub }) : null
           ]),
-          E('button', { cls: 'tag acc', text: 'Today',
-            onclick: () => { pullWeekTodoToDay(wk.y, wk.w, o.i, k); pullOpen = false; render(); } })
-        ]));
+          E('button', { cls: 'tag acc', text: 'Today', onclick: () => {
+            const item = it.take();
+            if (item) { D.tasks.push(item); save(true); }
+            pullOpen = false; render();
+          }})
+        ])));
       });
       pw.append(list);
       pw.append(E('p', { cls: 'lede', style: 'margin:8px 0 0',
-        text: 'Moving it here keeps it on the week \u2014 it shows under the day it landed on.' }));
+        text: 'Pulled work moves here rather than sitting in two lists \u2014 it still counts toward its project or goal.' }));
     }
     tc.append(pw);
   }
+
   tc.append(E('div', { cls: 'btnrow' }, remBtn('Send to Reminders',
     () => D.tasks.filter(t => !t.d).map(t => ({ title: t.t, due: k })))));
   tc.append(E('div', { cls: 'rule' }));
-  tc.append(field(isNow ? 'Notes on today' : 'Notes', areaWithLinks(D, 'note', 'What happened, what you noticed, what you made. Paste links freely.', 1, S.links)));
+  tc.append(field(isNow ? 'Notes on today' : 'Notes', areaWithLinks(D, 'note',
+    'What happened, what you noticed, what you made. Paste links freely.', 1, S.links)));
   v.append(tc);
 
   /* carried over */
@@ -1496,10 +1625,30 @@ function viewWeek() {
     ])));
   }
 
-  /* everything ticked — offer what could come next */
+  /* pull work up into the week at any time */
+  const pool = candidates(y, w);
   const done = W.todos.length && W.todos.every(t => t.d || !(t.t || '').trim());
+  if (pool.length && !(done && !openDays.length)) {
+    c3.append(E('div', { cls: 'rule' }));
+    c3.append(E('button', { cls: 'btn ghost', style: 'padding-left:0',
+      text: (weekPullOpen ? '\u2212' : '+') + ' Pull in work (' + pool.length + ')',
+      onclick: () => { weekPullOpen = !weekPullOpen; render(); } }));
+    if (weekPullOpen) {
+      const list = E('div', { style: 'border-left:2px solid var(--rule);padding-left:11px;margin-top:6px' });
+      pool.slice(0, 20).forEach(c => list.append(E('div', { cls: 'list-item' }, [
+        E('div', { cls: 'txt' }, [
+          E('div', { style: 'font-size:14.5px', text: c.text }),
+          E('div', { cls: 'pct', text: c.from })
+        ]),
+        E('button', { cls: 'tag acc', text: 'Add', onclick: () => { takeCandidate(c, W, wkKey); render(); } })
+      ])));
+      if (pool.length > 20) list.append(E('div', { cls: 'pct', text: pool.length - 20 + ' more' }));
+      c3.append(list);
+    }
+  }
+
+  /* everything ticked — offer what could come next */
   if (done && !openDays.length) {
-    const pool = candidates(y, w);
     c3.append(E('div', { cls: 'rule' }));
     c3.append(E('h3', { text: 'All clear' }));
     if (!pool.length) {
@@ -1511,11 +1660,7 @@ function viewWeek() {
           E('div', { style: 'font-size:14.5px', text: c.text }),
           E('div', { cls: 'pct', text: c.from })
         ]),
-        E('button', { cls: 'tag acc', text: 'Add', onclick: () => {
-          if (c.kind === 'day' && c.src) pullIntoWeek(c.src, wkKey);
-          else { W.todos.push({ t: c.text, d: false, g: c.g || undefined, ga: c.ga || undefined, p: c.p || undefined }); save(true); }
-          render();
-        }})
+        E('button', { cls: 'tag acc', text: 'Add', onclick: () => { takeCandidate(c, W, wkKey); render(); } })
       ])));
       if (pool.length > 10) c3.append(E('div', { cls: 'pct', style: 'margin-top:8px',
         text: pool.length - 10 + ' more waiting \u2014 see Loose ends under More' }));
@@ -2806,6 +2951,43 @@ function pageLoose() {
     v.append(c);
   }
 
+  /* project plans that were never scheduled */
+  const projOpen = [];
+  openProjects().forEach(pr => (pr.tasks || []).forEach((t, i) => {
+    if (!t.d && (t.t || '').trim()) projOpen.push({ pr, t, i });
+  }));
+  if (projOpen.length) {
+    const c = E('div', { cls: 'card' });
+    c.append(E('div', { cls: 'head' }, [E('h2', { text: 'Planned but never scheduled' }),
+      E('span', { cls: 'pct', text: projOpen.length })]));
+    c.append(E('p', { cls: 'lede', text: 'Project tasks that have not made it onto a day or a week yet.' }));
+    let lastPr = '';
+    projOpen.forEach(o => {
+      if (o.pr.id !== lastPr) {
+        lastPr = o.pr.id;
+        const n = daysUntil(o.pr.due);
+        c.append(E('button', { style: 'display:block;width:100%;text-align:left;margin:14px 0 2px',
+          onclick: () => go('goals', 'project', o.pr.id) }, [
+          E('h3', { style: 'margin:0', text: o.pr.title || 'Untitled project' }),
+          o.pr.due ? E('div', { cls: 'pct', style: n !== null && n < 0 ? 'color:#B23A3A' : '', text: dueLabel(o.pr.due) }) : null
+        ]));
+      }
+      c.append(E('div', { cls: 'list-item' }, [
+        E('button', { cls: 'box', style: 'flex:none',
+          html: '<svg viewBox="0 0 12 12"><polyline points="1.5,6.5 4.5,9.5 10.5,2.5"/></svg>',
+          onclick: () => { o.t.d = true; save(true); render(); } }),
+        E('div', { cls: 'txt' }, E('div', { style: 'font-size:14.5px', text: o.t.t })),
+        E('button', { cls: 'tag acc', text: 'Today', onclick: () => {
+          if (!o.t.id) o.t.id = uid();
+          const item = takeProjectTask(o.pr.id, o.t.id);
+          if (item) { day(today).tasks.push(item); save(true); }
+          render();
+        }})
+      ]));
+    });
+    v.append(c);
+  }
+
   const stale = dayOpen.filter(o => (new Date() - parseIso(o.dk)) / 86400000 > 30);
   if (stale.length) {
     const c = E('div', { cls: 'card' });
@@ -3440,13 +3622,25 @@ let studioView = 'list', editingId = null, openEntry = null, themeFilter = null,
 
 const newEntry = () => ({ id: uid(), date: iso(new Date()), title: '', did: '',
   inAction: '', onAction: '', forAction: '', media: [], links: [], themes: [],
-  goal: '', work: '', key: false, pull: '' });
+  goal: '', work: '', key: false, pull: '', claim: '' });
 
 function parseThemes(s) { return (s || '').split(',').map(t => t.trim()).filter(Boolean); }
 function themeCounts() {
-  const c = {};
-  S.studio.entries.filter(e => !e.draft).forEach(e => (e.themes || []).forEach(t => c[t] = (c[t] || 0) + 1));
-  return Object.entries(c).sort((a, b) => b[1] - a[1]);
+  /* "Tool building" and "tool building" are the same thread; show the commonest spelling */
+  const groups = {};
+  S.studio.entries.filter(e => !e.draft).forEach(e => (e.themes || []).forEach(t => {
+    const k = t.trim().toLowerCase();
+    if (!k) return;
+    const g = groups[k] = groups[k] || { n: 0, forms: {} };
+    g.n++; g.forms[t.trim()] = (g.forms[t.trim()] || 0) + 1;
+  }));
+  return Object.values(groups)
+    .map(g => [Object.keys(g.forms).sort((a, b) => g.forms[b] - g.forms[a])[0], g.n])
+    .sort((a, b) => b[1] - a[1]);
+}
+const sameTheme = (a, b) => String(a || '').trim().toLowerCase() === String(b || '').trim().toLowerCase();
+function entriesWithTheme(t) {
+  return S.studio.entries.filter(e => !e.draft && (e.themes || []).some(x => sameTheme(x, t)));
 }
 function entriesFor(dayIso) { return S.studio.entries.filter(e => e.date === dayIso && !e.draft); }
 
@@ -3536,7 +3730,7 @@ function viewStudio() {
 
   const list = S.studio.entries
     .filter(e => !e.draft)
-    .filter(e => !themeFilter || (e.themes || []).includes(themeFilter))
+    .filter(e => !themeFilter || (e.themes || []).some(x => sameTheme(x, themeFilter)))
     .slice().sort((a, b) => a.date < b.date ? 1 : -1);
 
   if (!list.length) v.append(E('div', { cls: 'card' }, E('div', { cls: 'empty',
@@ -3557,6 +3751,9 @@ function viewStudio() {
       ]))
     ]));
     if (openEntry === e.id) {
+      if ((e.claim || '').trim()) c.append(E('div', { style: 'margin-top:14px;padding-left:11px;border-left:3px solid var(--acc)' }, [
+        E('h3', { style: 'color:var(--acc)', text: 'What this showed' }),
+        E('p', { style: 'margin:0;font-size:15px' }, linkified(e.claim))]));
       if (e.did) c.append(E('div', { style: 'margin-top:14px' }, [E('h3', { text: 'What I did' }),
         E('p', { style: 'margin:0;font-size:14.5px' }, linkified(e.did))]));
       MODES.forEach(m => {
@@ -3724,7 +3921,11 @@ function studioForm() {
   themeInput.addEventListener('input', () => { commit(); save(); });
   sel.addEventListener('change', () => { commit(); save(); });
 
-  const cc = E('div', { cls: 'card' });
+  const cc = E('div', { cls: 'card on' });
+  cc.append(E('h3', { text: 'What this session showed' }));
+  cc.append(E('p', { cls: 'lede', text: 'One line. Not what you did \u2014 what it demonstrated. These accumulate into findings, and several small ones usually turn out to support a larger claim.' }));
+  cc.append(bindArea(e, 'claim', 'This session showed that\u2026', 1));
+  cc.append(E('div', { cls: 'rule' }));
   cc.append(E('div', { style: 'display:flex;gap:11px;align-items:flex-start' }, [
     E('button', { cls: 'box' + (e.key ? ' on' : ''), style: 'flex:none',
       html: '<svg viewBox="0 0 12 12"><polyline points="1.5,6.5 4.5,9.5 10.5,2.5"/></svg>',
@@ -3763,7 +3964,8 @@ const WORD_TARGET = 30000;
 const words = s => String(s || '').trim().split(/\s+/).filter(Boolean).length;
 
 const newWork = () => ({ id: uid(), title: '', kind: 'body', period: '', statement: '', media: '' });
-const newClaim = () => ({ id: uid(), text: '', work: '', theme: '', evidence: [], notes: '', date: iso(new Date()) });
+const newClaim = () => ({ id: uid(), text: '', work: '', theme: '', parent: '',
+  evidence: [], notes: '', date: iso(new Date()) });
 
 function studioStore() {
   S.studio.works = S.studio.works || [];
@@ -3774,6 +3976,27 @@ function studioStore() {
 const workOf = id => (S.studio.works || []).find(w => w.id === id);
 const sessionsOfWork = id => S.studio.entries.filter(e => !e.draft && e.work === id);
 const evidenceSessions = () => S.studio.entries.filter(e => !e.draft && e.key);
+
+/* claims nest: a finding can be supported by other findings as well as sessions */
+const childClaims = id => S.studio.claims.filter(c => c.parent === id);
+const topClaims = () => S.studio.claims.filter(c => !c.parent || !S.studio.claims.some(x => x.id === c.parent));
+function claimDescendants(id, seen) {
+  seen = seen || new Set();
+  childClaims(id).forEach(c => { if (!seen.has(c.id)) { seen.add(c.id); claimDescendants(c.id, seen); } });
+  return seen;
+}
+/* a claim's work is its own, or the nearest one above it */
+function claimWork(c, guard) {
+  guard = guard || 0;
+  if (c.work) return c.work;
+  const p = S.studio.claims.find(x => x.id === c.parent);
+  return p && guard < 12 ? claimWork(p, guard + 1) : '';
+}
+/* sessions carrying a one-line claim that has not been promoted yet */
+function looseSessionClaims() {
+  const used = new Set(S.studio.claims.flatMap(c => c.evidence || []));
+  return S.studio.entries.filter(e => !e.draft && (e.claim || '').trim() && !used.has(e.id));
+}
 
 /* ---------- works ---------- */
 let bulkWork = null, bulkFrom = '', bulkTo = '', bulkTheme = '', bulkOnly = false;
@@ -3786,7 +4009,7 @@ function bulkPool(wid) {
     if (bulkOnly && e.work) return false;
     if (bulkFrom && e.date < bulkFrom) return false;
     if (bulkTo && e.date > bulkTo) return false;
-    if (bulkTheme && !(e.themes || []).includes(bulkTheme)) return false;
+    if (bulkTheme && !(e.themes || []).some(x => sameTheme(x, bulkTheme))) return false;
     return true;
   }).sort((a, b) => a.date < b.date ? -1 : 1);
 }
@@ -3957,39 +4180,73 @@ function studioFindings() {
       evidenceSessions().length + ' are cited' }));
   v.append(bc);
 
+  /* sessions whose one-line claim has not become a finding yet */
+  const loose = looseSessionClaims();
+  if (loose.length) {
+    const lc = E('div', { cls: 'card' });
+    lc.append(E('div', { cls: 'head' }, [E('h2', { text: 'Claims waiting in sessions' }),
+      E('span', { cls: 'pct', text: loose.length })]));
+    lc.append(E('p', { cls: 'lede', text: 'Each of these is a line you wrote at the end of a session. Promote one to a finding, or attach it as evidence to one you already have.' }));
+    loose.slice(0, 12).forEach(e => lc.append(E('div', { cls: 'list-item' }, [
+      E('div', { cls: 'txt' }, [
+        E('div', { style: 'font-size:14.5px', text: e.claim }),
+        E('div', { cls: 'pct', text: e.date + (e.work ? ' \u00b7 ' + ((workOf(e.work) || {}).title || '') : '') })
+      ]),
+      E('button', { cls: 'tag acc', text: 'Promote', onclick: () => {
+        const c = Object.assign(newClaim(), { text: e.claim, work: e.work || '', evidence: [e.id],
+          theme: (e.themes || [])[0] || '' });
+        if (!e.key) e.key = true;
+        S.studio.claims.push(c); save(true); render();
+      }})
+    ])));
+    v.append(lc);
+  }
+
   const themes = themeCounts().map(t => t[0]);
-  S.studio.claims.forEach((cl, i) => {
-    const c = E('div', { cls: 'card' });
+
+  const drawClaim = (cl, depth) => {
+    const kids = childClaims(cl.id);
+    const c = E('div', { cls: 'card', style: depth ? 'margin-left:' + Math.min(depth, 3) * 10 + 'px;border-left:3px solid var(--edge)' : '' });
+    if (depth) c.append(E('div', { cls: 'eyebrow', style: 'margin-bottom:4px', text: 'supports \u2191' }));
     c.append(E('div', { style: 'display:flex;gap:8px;align-items:flex-start' }, [
       E('div', { style: 'flex:1' }, (() => {
         const ta = E('textarea', { rows: 2, placeholder: 'State what you found, in a sentence',
-          style: 'font-size:16px;line-height:1.35',
+          style: 'font-size:' + (depth ? 15 : 16) + 'px;line-height:1.35',
           oninput: e => { grow(e.target); cl.text = e.target.value; save(); } });
         ta.value = cl.text; requestAnimationFrame(() => grow(ta)); return ta;
       })()),
       E('button', { cls: 'x', text: '\u00d7', onclick: () => {
-        if (confirm('Delete this finding?')) { S.studio.claims.splice(i, 1); save(true); render(); } } })
+        if (!confirm(kids.length ? 'Delete this finding? Its ' + kids.length + ' supporting findings move up a level.' : 'Delete this finding?')) return;
+        kids.forEach(k => k.parent = cl.parent || '');
+        S.studio.claims = S.studio.claims.filter(x => x.id !== cl.id);
+        save(true); render();
+      }})
     ]));
 
-    const wsel = E('select', { style: 'width:100%;padding:7px 0;border:0;border-bottom:1px solid var(--rule);background:transparent',
-      onchange: e => { cl.work = e.target.value; save(); render(); } });
-    wsel.append(E('option', { value: '' }, 'Cross-cutting \u2014 no single work'));
-    S.studio.works.forEach(w => {
-      const o = E('option', { value: w.id }, w.title || 'Untitled work');
-      if (cl.work === w.id) o.setAttribute('selected', 'selected');
-      wsel.append(o);
-    });
-    c.append(field('Belongs to', wsel));
+    if (!depth || cl.work) {
+      const wsel = E('select', { style: 'width:100%;padding:7px 0;border:0;border-bottom:1px solid var(--rule);background:transparent',
+        onchange: e => { cl.work = e.target.value; save(); render(); } });
+      wsel.append(E('option', { value: '' }, depth ? 'Inherits from above' : 'Cross-cutting \u2014 no single work'));
+      S.studio.works.forEach(w => {
+        const o = E('option', { value: w.id }, w.title || 'Untitled work');
+        if (cl.work === w.id) o.setAttribute('selected', 'selected');
+        wsel.append(o);
+      });
+      c.append(field('Belongs to', wsel));
+    } else {
+      const inh = workOf(claimWork(cl));
+      c.append(E('div', { cls: 'pct', style: 'margin-top:6px',
+        text: inh ? 'Within ' + (inh.title || 'a work') : 'Cross-cutting' }));
+    }
 
     if (themes.length) {
       const chips = E('div', { cls: 'chips' });
       themes.forEach(t => chips.append(E('button', {
-        cls: 'chip' + (cl.theme === t ? ' on' : ''), style: cl.theme === t ? 'background:var(--acc)' : '',
-        text: t, onclick: () => { cl.theme = cl.theme === t ? '' : t; save(); render(); } })));
+        cls: 'chip' + (sameTheme(cl.theme, t) ? ' on' : ''), style: sameTheme(cl.theme, t) ? 'background:var(--acc)' : '',
+        text: t, onclick: () => { cl.theme = sameTheme(cl.theme, t) ? '' : t; save(); render(); } })));
       c.append(field('Thread', chips));
     }
 
-    /* evidence: pick from sessions marked as evidence */
     const pool = evidenceSessions();
     const ev = E('div');
     if (!pool.length) ev.append(E('div', { cls: 'empty', text: 'No sessions marked as evidence yet. Open a session and tick \u201cCite this\u201d.' }));
@@ -4004,15 +4261,26 @@ function studioFindings() {
         E('span', { cls: 'box' + (on ? ' on' : ''), style: 'flex:none',
           html: '<svg viewBox="0 0 12 12"><polyline points="1.5,6.5 4.5,9.5 10.5,2.5"/></svg>' }),
         E('span', { style: 'flex:1;min-width:0;font-size:14px' }, [
-          E('span', { cls: 'eyebrow', text: e.date + '  ' }), e.title || 'Untitled session',
+          E('span', { cls: 'eyebrow', text: e.date + '  ' }), e.claim || e.title || 'Untitled session',
           (e.pull || '').trim() ? E('div', { cls: 'pct', style: 'margin-top:2px', text: '\u201c' + e.pull.slice(0, 70) + '\u201d' }) : null
         ])
       ]));
     });
     c.append(field('Evidence', ev));
     c.append(field('How the evidence supports it', bindArea(cl, 'notes', 'The analytical link \u2014 this is what gets written up.', 1)));
+    c.append(E('div', { cls: 'btnrow' }, [
+      E('button', { cls: 'btn', text: '+ Supporting finding', onclick: () => {
+        S.studio.claims.push(Object.assign(newClaim(), { parent: cl.id }));
+        save(true); render();
+      }}),
+      cl.parent ? E('button', { cls: 'btn ghost', text: 'Detach', onclick: () => { cl.parent = ''; save(true); render(); } }) : null,
+      kids.length ? E('span', { cls: 'pct', style: 'align-self:center',
+        text: kids.length + ' supporting' }) : null
+    ]));
     v.append(c);
-  });
+    kids.forEach(k => drawClaim(k, depth + 1));
+  };
+  topClaims().forEach(cl => drawClaim(cl, 0));
 
   v.append(E('button', { cls: 'btn fill', style: 'margin-bottom:12px', text: '+ New finding',
     onclick: () => { S.studio.claims.push(newClaim()); save(true); render(); } }));
@@ -4023,7 +4291,7 @@ function studioFindings() {
     tc.append(E('h2', { text: 'Thread reviews' }));
     tc.append(E('p', { cls: 'lede', text: 'Periodically: what has changed in this thread, and what do you now think? These become the connective prose between findings.' }));
     themes.forEach(t => {
-      const n = S.studio.entries.filter(e => !e.draft && (e.themes || []).includes(t)).length;
+      const n = entriesWithTheme(t).length;
       tc.append(E('div', { style: 'padding:12px 0;border-top:1px solid var(--rule)' }, [
         E('div', { cls: 'eyebrow', text: t + ' \u00b7 ' + n + ' session' + (n === 1 ? '' : 's') }),
         bindArea(S.studio.themeNotes, t, 'Where this thread has got to\u2026', 1)
@@ -4040,6 +4308,7 @@ function exegesisWords() {
   const p = S.studio.project;
   let total = words(p.questions);
   S.studio.works.forEach(w => total += words(w.statement));
+  S.studio.entries.forEach(e => { if (!e.draft) total += words(e.claim); });
   S.studio.claims.forEach(c => {
     total += words(c.text) + words(c.notes);
     c.evidence.forEach(id => {
@@ -4054,17 +4323,36 @@ function exegesisWords() {
 function exegesisMarkdown() {
   studioStore();
   const L = [], p = S.studio.project;
-  const byId = id => S.studio.entries.find(x => x.id === id);
   const cite = e => e.date + (e.title ? ', ' + e.title : '');
   const quoteOf = e => (e.pull || '').trim() || (e.inAction || '').trim() || (e.onAction || '').trim();
 
   L.push('# ' + (p.title || 'Untitled project') + ' — exegesis draft\n');
   const b = exegesisWords();
-  L.push('_Generated ' + iso(new Date()) + '. ' + b.total.toLocaleString() + ' words of ' +
-    WORD_TARGET.toLocaleString() + ' drafted, from ' + S.studio.entries.filter(e => !e.draft).length +
-    ' documented sessions, ' + evidenceSessions().length + ' of them cited._\n');
+  const nSess = S.studio.entries.filter(e => !e.draft).length;
+  L.push('_Generated ' + iso(new Date()) + '. ' + nSess + ' documented session' + (nSess === 1 ? '' : 's') +
+    ', ' + evidenceSessions().length + ' cited. ' +
+    (b.total ? b.total.toLocaleString() + ' words drafted towards ' + WORD_TARGET.toLocaleString() + '.'
+             : 'Nothing drafted yet \u2014 see what this draft still needs, below.') + '_\n');
 
   if (p.questions) L.push('## Research questions\n\n' + p.questions + '\n');
+
+  const citedSess = evidenceSessions();
+  const claimed = S.studio.claims.filter(c => (c.text || '').trim());
+  const gaps = [];
+  if (!p.questions) gaps.push('**Research questions** are not set. Studio \u2192 the project card \u2192 Edit.');
+  if (!S.studio.works.length) gaps.push('**No works defined**, so there are no sections for the argument to sit in. Studio \u2192 Works, or make one from a goal.');
+  else if (S.studio.works.some(w => !(w.statement || '').trim()))
+    gaps.push('**Some works have no statement** of what they are doing \u2014 that paragraph opens each section.');
+  if (!claimed.length) gaps.push('**No findings recorded.** A finding is a claim in a sentence with sessions cited under it. Without them this is a record, not an argument. Studio \u2192 Findings.');
+  if (!citedSess.length) gaps.push('**No sessions cited.** Open a session and tick \u201cCite this\u201d, then mark the passage worth quoting.');
+  const orphan = S.studio.entries.filter(e => !e.draft && !e.work).length;
+  if (S.studio.works.length && orphan) gaps.push('**' + orphan + ' session' + (orphan === 1 ? ' is' : 's are') +
+    ' not attached to a work**, so they cannot appear in any section. Studio \u2192 Works \u2192 Attach sessions.');
+  if (gaps.length) {
+    L.push('## What this draft still needs\n');
+    gaps.forEach(g => L.push('- ' + g));
+    L.push('\n_This section is scaffolding. It disappears once the gaps are filled._\n');
+  }
 
   L.push('## Methodology\n');
   L.push('This research was conducted through a reflective practice methodology. Studio sessions were documented at the time of making and reflected on in three temporal modes — reflection in action, reflection on action, and reflection for action — following the account of the creative reflective practitioner developed by Linda Candy, building on Donald Schön. Because in-the-moment noticing cannot be reconstructed retrospectively, documentation was made during or immediately after each session rather than recalled later.\n');
@@ -4072,8 +4360,31 @@ function exegesisMarkdown() {
     ' documented sessions. Rather than present that record in full, this exegesis proceeds by claim: findings are stated, then evidenced by selected sessions, with the complete record retained as an appendix. Selection criteria and the relationship between artefact and text are set out below.\n');
   L.push('[Expand: your documentation methods, your selection criteria for evidence, the status of the artefacts in the examination, and full citations for Candy and Schön in your required style.]\n');
 
-  /* the argument, work by work */
-  const claimsFor = wid => S.studio.claims.filter(c => c.work === wid && (c.text || '').trim());
+  /* the argument: findings nested, gathered under the work they belong to */
+  const byId = id2 => S.studio.entries.find(x => x.id === id2);
+  const H = n => '#'.repeat(Math.min(n, 6)) + ' ';
+
+  const renderClaim = (c, depth) => {
+    if (!(c.text || '').trim()) return;
+    L.push('\n' + H(depth) + c.text.trim().replace(/\n+/g, ' ') + '\n');
+    if (c.theme) L.push('_Thread: ' + c.theme + '._\n');
+    if (c.notes) L.push(c.notes.trim() + '\n');
+    (c.evidence || []).forEach(id2 => {
+      const e = byId(id2);
+      if (!e) return;
+      const q = quoteOf(e);
+      if (q) L.push('> ' + q.replace(/\n+/g, '\n> ') + '\n>\n> \u2014 ' + cite(e) + '\n');
+    });
+    const fwd = (c.evidence || []).map(byId).filter(e => e && (e.forAction || '').trim());
+    if (fwd.length) {
+      L.push('**What this asked for next**\n');
+      fwd.forEach(e => L.push('- ' + e.date + ': ' + e.forAction.trim().replace(/\n+/g, ' ')));
+      L.push('');
+    }
+    childClaims(c.id).forEach(k => renderClaim(k, depth + 1));
+  };
+
+  const topFor = wid => topClaims().filter(c => claimWork(c) === wid && (c.text || '').trim());
   S.studio.works.forEach(w => {
     const ss = sessionsOfWork(w.id);
     L.push('\n## ' + (w.title || 'Untitled work') + '\n');
@@ -4084,41 +4395,17 @@ function exegesisMarkdown() {
       const dates = ss.map(e => e.date).sort();
       L.push('_Developed across ' + ss.length + ' documented sessions, ' + dates[0] + ' to ' + dates[dates.length - 1] + '._\n');
     }
-    const cls = claimsFor(w.id);
-    if (!cls.length) L.push('[No findings recorded against this work yet.]\n');
-    cls.forEach(c => {
-      L.push('\n### ' + c.text.trim().replace(/\n+/g, ' ') + '\n');
-      if (c.theme) L.push('_Thread: ' + c.theme + '._\n');
-      if (c.notes) L.push(c.notes.trim() + '\n');
-      c.evidence.forEach(id => {
-        const e = byId(id);
-        if (!e) return;
-        const q = quoteOf(e);
-        if (q) L.push('> ' + q.replace(/\n+/g, '\n> ') + '\n>\n> — ' + cite(e) + '\n');
-      });
-      /* the developmental thread, from what the work asked for next */
-      const fwd = c.evidence.map(byId).filter(e => e && (e.forAction || '').trim());
-      if (fwd.length) {
-        L.push('**What this asked for next**\n');
-        fwd.forEach(e => L.push('- ' + e.date + ': ' + e.forAction.trim().replace(/\n+/g, ' ')));
-        L.push('');
-      }
-    });
+    const cls = topFor(w.id);
+    if (!cls.length) L.push('[No findings recorded against this work yet. ' +
+      (ss.filter(e => e.key).length ? ss.filter(e => e.key).length + ' of its sessions are cited and ready to attach to one.'
+                                    : 'None of its sessions are cited yet.') + ']\n');
+    cls.forEach(c => renderClaim(c, 3));
   });
 
-  const cross = S.studio.claims.filter(c => !c.work && (c.text || '').trim());
+  const cross = topClaims().filter(c => !claimWork(c) && (c.text || '').trim());
   if (cross.length) {
     L.push('\n## Across the works\n');
-    cross.forEach(c => {
-      L.push('\n### ' + c.text.trim().replace(/\n+/g, ' ') + '\n');
-      if (c.notes) L.push(c.notes.trim() + '\n');
-      c.evidence.forEach(id => {
-        const e = byId(id);
-        if (!e) return;
-        const q = quoteOf(e);
-        if (q) L.push('> ' + q.replace(/\n+/g, '\n> ') + '\n>\n> — ' + cite(e) + '\n');
-      });
-    });
+    cross.forEach(c => renderClaim(c, 3));
   }
 
   /* threads */
@@ -4126,7 +4413,7 @@ function exegesisMarkdown() {
   if (th.length) {
     L.push('\n## Thematic threads\n');
     th.forEach(([t, n]) => {
-      const ss = S.studio.entries.filter(e => !e.draft && (e.themes || []).includes(t));
+      const ss = entriesWithTheme(t);
       const dates = ss.map(e => e.date).sort();
       L.push('\n### ' + t + '\n');
       L.push('_' + n + ' session' + (n === 1 ? '' : 's') +
@@ -4144,7 +4431,7 @@ function exegesisMarkdown() {
     L.push('\n[Reformat into your required referencing style.]\n');
   }
 
-  L.push('\n## Appendix A — the works\n');
+  if (S.studio.works.length) L.push('\n## Appendix A — the works\n');
   S.studio.works.forEach(w => L.push('- **' + (w.title || 'Untitled') + '** — ' +
     [w.kind === 'body' ? 'body of work' : 'individual work', w.period, w.media].filter(Boolean).join(', ') +
     '. ' + sessionsOfWork(w.id).length + ' documented sessions.'));
@@ -4164,6 +4451,7 @@ function sessionArchiveMarkdown() {
     const w = workOf(e.work);
     L.push('\n## ' + e.date + ' — ' + (e.title || 'Untitled session') + (e.key ? ' [cited]' : '') + '\n');
     if (w) L.push('_' + (w.title || 'Untitled work') + '_\n');
+    if ((e.claim || '').trim()) L.push('**What this showed**  \n' + e.claim.trim() + '\n');
     if (e.did) L.push('**What I did**  \n' + e.did.trim() + '\n');
     MODES.forEach(m => { if ((e[m.id] || '').trim()) L.push('**' + m.label + '**  \n' + e[m.id].trim() + '\n'); });
     if ((e.pull || '').trim()) L.push('**Marked passage**  \n> ' + e.pull.trim() + '\n');
@@ -4412,7 +4700,7 @@ function hostOf(url) {
 }
 function sourceKind(url) {
   const h = hostOf(url);
-  if (ytId(url)) return { k: 'video', label: 'YouTube', hex: '#C0392B' };
+  if (ytId(url) || /(^|\.)youtube\.com$|(^|\.)youtu\.be$/.test(h)) return { k: 'video', label: 'YouTube', hex: '#C0392B' };
   if (/vimeo\.com/.test(h)) return { k: 'video', label: 'Vimeo', hex: '#1E96A8' };
   if (/(doi\.org|jstor|tandfonline|sciencedirect|springer|academia\.edu|researchgate|scholar\.google)/.test(h))
     return { k: 'paper', label: 'Paper', hex: '#5A4FB0' };
@@ -4420,14 +4708,29 @@ function sourceKind(url) {
   if (/(podcasts\.apple|spotify|soundcloud)/.test(h)) return { k: 'audio', label: 'Audio', hex: '#D9A400' };
   return { k: 'page', label: h || 'Link', hex: '#71716D' };
 }
+function looksLikeId(seg) {
+  if (!seg) return true;
+  if (/\s/.test(seg)) return false;
+  if (/^\d+$/.test(seg)) return true;
+  if (seg.length > 14) return true;
+  if (seg.length >= 8 && /[a-z]/.test(seg) && /[A-Z]/.test(seg)) return true;   /* mixed-case token */
+  if (seg.length >= 8 && /\d/.test(seg) && /[a-zA-Z]/.test(seg)) return true;  /* alphanumeric hash */
+  const vowels = (seg.match(/[aeiou]/gi) || []).length;
+  return vowels / seg.length < 0.22;
+}
 function autoLabel(url) {
   const h = hostOf(url);
+  const src = sourceKind(url);
+  if (sourceKind(url).label === 'YouTube') return 'YouTube video';
   try {
-    const p = new URL(normUrl(url)).pathname.split('/').filter(Boolean).pop() || '';
-    const t = decodeURIComponent(p).replace(/[-_+]/g, ' ').replace(/\.\w{2,4}$/, '').trim();
-    if (t && t.length > 3 && !/^[\w-]{11}$/.test(t)) return t.charAt(0).toUpperCase() + t.slice(1);
+    const u = new URL(normUrl(url));
+    const seg = (u.pathname.split('/').filter(Boolean).pop() || '');
+    const clean = decodeURIComponent(seg).replace(/\.\w{2,5}$/, '').replace(/[-_+]/g, ' ').trim();
+    if (clean.length > 3 && !looksLikeId(seg)) return clean.charAt(0).toUpperCase() + clean.slice(1);
   } catch (e) {}
-  return h;
+  if (src.k === 'video') return src.label + ' video';
+  if (src.k === 'paper') return 'Paper at ' + h;
+  return h || 'Link';
 }
 
 /* arr: [{id,label,url,note}] */
@@ -4456,6 +4759,11 @@ function linkList(arr, redraw, opts) {
         onclick: () => { arr.splice(i, 1); save(); redraw(); } })
     ]));
     if (!opts.compact) {
+      const lab = E('input', { type: 'text', placeholder: 'Label', style: 'font-size:14px;margin-top:6px',
+        oninput: ev => { l.label = ev.target.value; save(); } });
+      lab.value = l.label || '';
+      lab.addEventListener('blur', () => redraw());
+      row.append(lab);
       const ta = E('textarea', { rows: 1, placeholder: 'Why this matters — a line for later',
         style: 'font-size:14px;margin-top:6px',
         oninput: ev => { grow(ev.target); l.note = ev.target.value; save(); } });
