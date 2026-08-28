@@ -182,6 +182,7 @@ textarea::placeholder,input::placeholder{color:var(--faint)}
 <script>
 /* ===================== core ===================== */
 const KEY = 'goaldigger2026';
+/* BUILD_STAMP */ const BUILD = '2026-08-26.2054';
 const YEAR = 2026;                       /* the year this planner began */
 const CURRENT_YEAR = new Date().getFullYear();
 const MONTHS = ['January','February','March','April','May','June','July','August','September','October','November','December'];
@@ -192,6 +193,7 @@ const DEFAULT = () => ({
   years: {},        // per-year records: { '2026': { f: {...} } } — foundations, reviews, budget
   habits: [],       // {id,name,hue}
   hlog: {},         // "2026-08-15": ["h1","h2"]
+  rlog: {},         // "2026-08-15": ["r1","r4"] — morning and evening rituals
   days: {},         // "2026-08-15": {note, tasks:[{t,d}]}
   weeks: {},        // "2026-W33": {focus,feel,grat[],goals[],todos[],notes,wins[],rate}
   months: {},       // "2026-08": {goals:[{t,focus[],notes}], am[], pm[], review:{}}
@@ -213,13 +215,35 @@ function load() {
   try {
     const raw = localStorage.getItem(KEY);
     if (!raw) return DEFAULT();
-    return migrate(Object.assign(DEFAULT(), JSON.parse(raw)));
+    const data = Object.assign(DEFAULT(), JSON.parse(raw));
+    try { return migrate(data); }
+    catch (e) { console.error('migration failed, keeping data as-is', e); return data; }
   } catch (e) { return DEFAULT(); }
 }
 /* v1 kept one year's prompts in S.f — move it into the per-year store */
 function migrate(st) {
   st.years = st.years || {};
   st.projects = st.projects || [];
+  st.rlog = st.rlog || {};
+  /* weekly goals were three plain lines; they are items now, like tasks */
+  Object.values(st.weeks || {}).forEach(w => {
+    w.goals = (w.goals || []).map(g => typeof g === 'string' ? { t: g, d: false } : g)
+      .filter(g => g && ((g.t || '').trim() || g.g || g.p));
+  });
+  Object.values(st.months || {}).forEach(m => {
+    (m.goals || []).forEach(g => {
+      if (!('g' in g)) g.g = '';
+      g.focus = (g.focus || []).map(f => typeof f === 'string' ? { t: f, d: false } : f)
+        .filter(f => f && ((f.t || '').trim() || f.g || f.p));
+    });
+    ['am', 'pm'].forEach(k => {
+      m[k] = (m[k] || []).map(x => typeof x === 'string' ? { id: uid(), t: x } : x)
+        .filter(x => x && ((x.t || '').trim()));
+    });
+    m.review = m.review || {};
+    m.review.byGoal = m.review.byGoal || {};
+    m.snap = m.snap || {};
+  });
   /* v2 allowed one parent; a goal can now serve several */
   (st.goals || []).forEach(g => {
     if (!g.parents) g.parents = g.parent ? [g.parent] : [];
@@ -269,7 +293,7 @@ function toast(msg) {
   t.textContent = msg; t.classList.add('show');
   clearTimeout(toastTimer); toastTimer = setTimeout(() => t.classList.remove('show'), 1300);
 }
-const uid = () => Math.random().toString(36).slice(2, 9);
+function uid() { return Math.random().toString(36).slice(2, 9); }
 
 /* ===================== dates ===================== */
 const pad = n => String(n).padStart(2, '0');
@@ -544,8 +568,43 @@ function renderFields(defs, store) {
 }
 
 /* checkable, growable list: array of {t,d} */
+let reordering = null;
+
+/* a compact mode for putting the list in the order you mean to do it */
+function reorderView(arr, redraw) {
+  const box = E('div');
+  box.append(E('div', { cls: 'head', style: 'margin-bottom:6px' }, [
+    E('h3', { style: 'margin:0', text: 'Drag order' }),
+    E('button', { cls: 'btn ghost', style: 'padding:0', text: 'Done',
+      onclick: () => { reordering = null; redraw(); } })
+  ]));
+  const move = (from, to) => {
+    if (to < 0 || to >= arr.length) return;
+    const [it] = arr.splice(from, 1);
+    arr.splice(to, 0, it);
+    save(true); redraw();
+  };
+  arr.forEach((it, i) => {
+    box.append(E('div', { style: 'display:flex;gap:7px;align-items:center;padding:7px 0;border-top:1px solid var(--rule)' }, [
+      E('span', { cls: 'num', style: 'padding-top:0', text: (i + 1) + '.' }),
+      E('span', { style: 'flex:1;min-width:0;font-size:14.5px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap' +
+        (it.d ? ';color:var(--faint);text-decoration:line-through' : ''), text: it.t || '\u2014' }),
+      i > 0 ? E('button', { cls: 'tag', style: 'padding:5px 8px', text: '\u2191', 'aria-label': 'Up',
+        onclick: () => move(i, i - 1) }) : E('span', { style: 'width:28px' }),
+      i < arr.length - 1 ? E('button', { cls: 'tag', style: 'padding:5px 8px', text: '\u2193', 'aria-label': 'Down',
+        onclick: () => move(i, i + 1) }) : E('span', { style: 'width:28px' }),
+      i > 0 ? E('button', { cls: 'tag acc', style: 'padding:5px 8px', text: 'top', 'aria-label': 'To the top',
+        onclick: () => move(i, 0) }) : E('span', { style: 'width:34px' })
+    ]));
+  });
+  box.append(E('p', { cls: 'lede', style: 'margin-top:10px',
+    text: 'First on the list is what you mean to do first. Ticked items keep their place until you clear them.' }));
+  return box;
+}
+
 function checkList(arr, ph, redraw, opts) {
   opts = opts || {};
+  if (reordering === arr) return reorderView(arr, redraw);
   const box = E('div');
   arr.forEach((it, i) => {
     const row = E('div');
@@ -561,12 +620,26 @@ function checkList(arr, ph, redraw, opts) {
       E('button', { cls: 'x', text: '\u00d7', 'aria-label': 'Remove',
         onclick: () => { arr.splice(i, 1); save(); redraw(); } })
     ]));
+    if (opts.note !== false) row.append(noteControl(it, redraw));
+    if (opts.link) row.append(costControl(it, redraw));
     if (opts.link) row.append(goalLink(it, redraw));
     if (opts.move) row.append(moveControl(arr, i, opts.move, redraw));
     box.append(row);
   });
-  box.append(E('button', { cls: 'btn ghost', text: '+ Add', style: 'margin-top:8px',
+  const btns = E('div', { style: 'display:flex;gap:12px;align-items:center;margin-top:8px' });
+  btns.append(E('button', { cls: 'btn ghost', text: '+ Add', style: 'padding-left:0',
     onclick: () => { arr.push({ t: '', d: false }); save(); redraw(); } }));
+  if (arr.filter(x => (x.t || '').trim()).length > 1) {
+    btns.append(E('button', { cls: 'btn ghost', text: 'Reorder',
+      onclick: () => { reordering = arr; redraw(); } }));
+    if (arr.some(x => x.d)) btns.append(E('button', { cls: 'btn ghost', text: 'Clear ticked',
+      onclick: () => {
+        if (!confirm('Remove the ticked items from this list?')) return;
+        for (let i = arr.length - 1; i >= 0; i--) if (arr[i].d) arr.splice(i, 1);
+        save(true); redraw();
+      }}));
+  }
+  box.append(btns);
   if (!arr.length) box.insertBefore(E('div', { cls: 'empty', text: ph || 'Nothing here yet.' }), box.firstChild);
   return box;
 }
@@ -646,6 +719,48 @@ function toggleHabit(day, hid) {
   if (!arr.length) delete S.hlog[day];
   save();
 }
+/* rituals: the month names them, the day ticks them */
+function ritualsFor(dateIso) {
+  const d = parseIso(dateIso), M = (S.months || {})[monthKey(d.getFullYear(), d.getMonth())];
+  if (!M) return { am: [], pm: [] };
+  return { am: (M.am || []).filter(r => (r.t || '').trim()), pm: (M.pm || []).filter(r => (r.t || '').trim()) };
+}
+function ritualDone(dateIso, rid) { return ((S.rlog || {})[dateIso] || []).includes(rid); }
+function toggleRitual(dateIso, rid) {
+  S.rlog = S.rlog || {};
+  const arr = S.rlog[dateIso] = S.rlog[dateIso] || [];
+  const i = arr.indexOf(rid);
+  i < 0 ? arr.push(rid) : arr.splice(i, 1);
+  if (!arr.length) delete S.rlog[dateIso];
+  save();
+}
+function ritualRate(rid, y, m) {
+  const dim = new Date(y, m + 1, 0).getDate();
+  const today = new Date();
+  let days = 0, hit = 0;
+  for (let d = 1; d <= dim; d++) {
+    const dt = new Date(y, m, d);
+    if (dt > today) break;
+    days++;
+    if (ritualDone(iso(dt), rid)) hit++;
+  }
+  return { days, hit, pct: days ? Math.round(hit / days * 100) : 0 };
+}
+
+/* habits carrying a particular goal or project */
+function habitsForGoal(id) { return S.habits.filter(h => h.g === id || h.p === id); }
+function habitMonthRate(hid, y, m) {
+  const dim = new Date(y, m + 1, 0).getDate(), today = new Date();
+  let days = 0, hit = 0;
+  for (let d = 1; d <= dim; d++) {
+    const dt = new Date(y, m, d);
+    if (dt > today) break;
+    days++;
+    if (logged(iso(dt), hid)) hit++;
+  }
+  return { days, hit, pct: days ? Math.round(hit / days * 100) : 0 };
+}
+
 function streak(hid) {
   let n = 0, d = new Date();
   if (!logged(iso(d), hid)) d = addDays(d, -1);
@@ -971,13 +1086,15 @@ function goalLink(item, redraw) {
   const wrap = E('div', { style: 'padding:0 0 6px 29px;display:flex;gap:6px;flex-wrap:wrap;align-items:center' });
   const g = item.g ? S.goals.find(x => x.id === item.g) : null;
   const p = item.p ? projectById(item.p) : null;
+  const ms = g && item.ms ? (g.milestones || []).find(x => x.id === item.ms) : null;
 
   if (p) wrap.append(E('button', { cls: 'tag acc', text: p.title || 'Untitled project',
     onclick: () => { linkingItem = linkingItem === item ? null : item; redraw(); } }));
-  if (g) wrap.append(E('button', { cls: 'tag acc', text: g.title || 'Untitled goal',
+  if (g) wrap.append(E('button', { cls: 'tag acc',
+    text: ms ? (ms.t || 'Milestone') + ' \u00b7 ' + (g.title || 'goal') : (g.title || 'Untitled goal'),
     onclick: () => { linkingItem = linkingItem === item ? null : item; redraw(); } }));
   if (!p && !g) wrap.append(E('button', { cls: 'tag', style: 'border-style:dashed;color:var(--faint)',
-    text: '+ project or goal',
+    text: '+ project, goal or milestone',
     onclick: () => { linkingItem = linkingItem === item ? null : item; redraw(); } }));
   if (g && item.ga) wrap.append(E('span', { cls: 'pct', text: 'ticks the goal too' }));
 
@@ -1004,11 +1121,31 @@ function goalLink(item, redraw) {
     goals.forEach(gg => panel.append(E('button', {
       cls: 'menu-item', style: 'font-size:13px;padding:9px 0',
       onclick: () => {
-        if (item.g === gg.id) { delete item.g; delete item.ga; }
-        else item.g = gg.id;
+        if (item.g === gg.id && !item.ms) { delete item.g; delete item.ga; }
+        else { item.g = gg.id; delete item.ms; }
         linkingItem = null; save(true); redraw();
       }}, [gg.title || 'Untitled goal',
-          E('span', { cls: 'pct', text: item.g === gg.id ? 'linked' : goalProgress(gg) + '%' })])));
+          E('span', { cls: 'pct', text: item.g === gg.id && !item.ms ? 'linked' : goalProgress(gg) + '%' })])));
+
+    const stones = [];
+    goals.forEach(gg => (gg.milestones || []).forEach(ms => {
+      if (!(ms.t || '').trim()) return;
+      if (!ms.id) ms.id = uid();
+      stones.push({ g: gg, ms });
+    }));
+    if (stones.length) {
+      panel.append(E('h3', { style: 'margin:12px 0 0', text: 'Milestones' }));
+      stones.forEach(({ g: gg, ms }) => panel.append(E('button', {
+        cls: 'menu-item', style: 'font-size:13px;padding:9px 0',
+        onclick: () => {
+          if (item.ms === ms.id) { delete item.ms; delete item.g; }
+          else { item.ms = ms.id; item.g = gg.id; }
+          linkingItem = null; save(true); redraw();
+        }}, [
+        E('span', {}, [ms.t, E('small', { text: gg.title || 'Untitled goal' })]),
+        E('span', { cls: 'pct', text: item.ms === ms.id ? 'linked' : (ms.d ? 'reached' : '') })
+      ])));
+    }
 
     panel.append(E('button', { cls: 'menu-item', style: 'font-size:12px;color:var(--mut);padding:9px 0',
       onclick: () => { delete item.g; delete item.ga; delete item.p; linkingItem = null; save(true); redraw(); } },
@@ -1024,9 +1161,10 @@ function tasksForGoal(id) {
   Object.keys(S.days).sort().forEach(dk => (S.days[dk].tasks || []).forEach(t => {
     if (t.g === id) out.push({ where: dk, t });
   }));
-  Object.keys(S.weeks).sort().forEach(wk => (S.weeks[wk].todos || []).forEach(t => {
-    if (t.g === id) out.push({ where: wk.replace('-W', ' week '), t });
-  }));
+  Object.keys(S.weeks).sort().forEach(wk => {
+    (S.weeks[wk].todos || []).forEach(t => { if (t.g === id) out.push({ where: wk.replace('-W', ' week '), t }); });
+    (S.weeks[wk].goals || []).forEach(t => { if (t.g === id) out.push({ where: wk.replace('-W', ' week ') + ' \u00b7 weekly goal', t }); });
+  });
   return out;
 }
 
@@ -1043,6 +1181,7 @@ function weekEffort(y, w) {
   };
   for (let i = 0; i < 7; i++) ((S.days[iso(addDays(mon, i))] || {}).tasks || []).forEach(add);
   ((S.weeks[weekKey(y, w)] || {}).todos || []).forEach(add);
+  ((S.weeks[weekKey(y, w)] || {}).goals || []).forEach(add);
   return { tally, none };
 }
 
@@ -1127,9 +1266,194 @@ function moveControl(arr, i, fromIso, redraw) {
 }
 
 
+/* ===================== a note on a single task ===================== */
+let notingItem = null;
+
+function noteControl(it, redraw) {
+  const wrap = E('div', { style: 'padding:0 0 6px 29px' });
+  const has = (it.n || '').trim();
+  if (!has && notingItem !== it) {
+    wrap.append(E('button', { cls: 'tag', style: 'border-style:dashed;color:var(--faint)', text: '+ note',
+      onclick: () => { notingItem = it; redraw(); } }));
+    return wrap;
+  }
+  const ta = E('textarea', { rows: 1, placeholder: 'What this involves, where you got to, what to remember',
+    style: 'font-size:14px;border-bottom:1px solid var(--rule)',
+    oninput: e => { grow(e.target); it.n = e.target.value; save(); } });
+  ta.value = it.n || '';
+  requestAnimationFrame(() => { grow(ta); if (notingItem === it && ta.focus) ta.focus(); });
+  wrap.append(ta);
+  const urls = foundLinks(it.n);
+  if (urls.length) {
+    const chips = E('div', { style: 'display:flex;gap:6px;flex-wrap:wrap;margin-top:5px' });
+    urls.forEach(u => chips.append(E('a', { href: normUrl(u), target: '_blank', rel: 'noopener noreferrer',
+      cls: 'chip', style: 'font-size:11.5px;padding:4px 9px;text-decoration:none;color:var(--ink)' },
+      hostOf(u) || 'link')));
+    wrap.append(chips);
+  }
+  return wrap;
+}
+
+
+/* ===================== what a month actually touched ===================== */
+function activeInMonth(y, m) {
+  const ids = new Set();
+  const note = t => { if (t.g) ids.add('g:' + t.g); if (t.p) ids.add('p:' + t.p); };
+  const first = iso(new Date(y, m, 1)), last = iso(new Date(y, m + 1, 0));
+  Object.keys(S.days).forEach(dk => {
+    if (dk < first || dk > last) return;
+    (S.days[dk].tasks || []).forEach(note);
+  });
+  Object.keys(S.weeks).forEach(wk => {
+    const [wy, ww] = wk.split('-W').map(Number);
+    if (weekMonth(wy, ww) !== m || wy !== y) return;
+    (S.weeks[wk].todos || []).forEach(note);
+    (S.weeks[wk].goals || []).forEach(note);
+  });
+  const M = (S.months || {})[monthKey(y, m)];
+  if (M) (M.goals || []).forEach(g => { note(g); (g.focus || []).forEach(note); });
+  return Array.from(ids).map(k => {
+    const [kind, id] = [k.slice(0, 1), k.slice(2)];
+    if (kind === 'p') { const p = projectById(id); return p && { key: k, kind: 'project', id, obj: p, pct: projectProgress(p) }; }
+    const g = S.goals.find(x => x.id === id);
+    return g && { key: k, kind: 'goal', id, obj: g, pct: goalProgress(g) };
+  }).filter(Boolean);
+}
+
+/* things finished inside a month, for the review to draw on */
+function finishedInMonth(y, m) {
+  const out = [];
+  const first = iso(new Date(y, m, 1)), last = iso(new Date(y, m + 1, 0));
+  Object.keys(S.days).sort().forEach(dk => {
+    if (dk < first || dk > last) return;
+    (S.days[dk].tasks || []).forEach(t => { if (t.d && (t.t || '').trim()) out.push({ text: t.t, from: dk }); });
+  });
+  Object.keys(S.weeks).forEach(wk => {
+    const [wy, ww] = wk.split('-W').map(Number);
+    if (weekMonth(wy, ww) !== m || wy !== y) return;
+    (S.weeks[wk].goals || []).forEach(t => { if (t.d && (t.t || '').trim()) out.push({ text: t.t, from: 'weekly goal' }); });
+    (S.weeks[wk].wins || []).forEach(x => { if ((x || '').trim()) out.push({ text: x, from: 'week ' + ww + ' win' }); });
+  });
+  S.goals.forEach(g => (g.milestones || []).forEach(ms => {
+    if (ms.d && (ms.t || '').trim()) out.push({ text: ms.t, from: 'milestone \u00b7 ' + (g.title || 'goal') });
+  }));
+  S.projects.forEach(p => { if (p.done && p.done >= first && p.done <= last)
+    out.push({ text: p.title || 'Untitled project', from: 'project finished' }); });
+  const seen = new Set();
+  return out.filter(o => { const k = o.text.trim().toLowerCase(); if (seen.has(k)) return false; seen.add(k); return true; });
+}
+
+
+/* ===================== what a task costs ===================== */
+let costingItem = null;
+
+function costControl(it, redraw) {
+  const wrap = E('div', { style: 'padding:0 0 6px 29px' });
+  const has = num(it.c);
+  if (!has && costingItem !== it) {
+    wrap.append(E('button', { cls: 'tag', style: 'border-style:dashed;color:var(--faint)', text: '+ cost',
+      onclick: () => { costingItem = it; redraw(); } }));
+    return wrap;
+  }
+  const inp = E('input', { type: 'text', inputmode: 'decimal', placeholder: '0',
+    style: 'font-size:14px;max-width:110px',
+    oninput: e => { it.c = e.target.value; save(); } });
+  inp.value = it.c || '';
+  inp.addEventListener('blur', () => { costingItem = null; redraw(); });
+  const owner = it.p ? projectById(it.p) : null;
+  wrap.append(E('div', { style: 'display:flex;gap:9px;align-items:center' }, [
+    E('span', { cls: 'eyebrow', text: 'Cost' }), inp,
+    owner ? E('span', { cls: 'pct', text: 'counts toward ' + (owner.title || 'the project') }) : null
+  ]));
+  return wrap;
+}
+
+
+/* ===================== everything you have written ===================== */
+/* Day, week and month notes are journal entries. They keep living where they
+   were written, but the Notes tab can see them, tag them, and cite them. */
+
+function journalEntries() {
+  const out = [];
+  Object.keys(S.days).forEach(dk => {
+    const d = S.days[dk];
+    if (!(d.note || '').trim() && !(d.themes || []).length) return;
+    out.push({ id: 'day:' + dk, kind: 'day', date: dk, obj: d, body: d.note || '',
+      label: DOW[(parseIso(dk).getDay() + 6) % 7] + ' ' + dk,
+      open: () => { R.day = dk; go('today'); } });
+  });
+  Object.keys(S.weeks).forEach(wk => {
+    const w = S.weeks[wk];
+    if (!(w.notes || '').trim() && !(w.themes || []).length) return;
+    const [y, ww] = wk.split('-W').map(Number);
+    out.push({ id: 'week:' + wk, kind: 'week', date: iso(mondayOf(y, ww)), obj: w, body: w.notes || '',
+      label: 'Week ' + pad(ww) + ', ' + y,
+      open: () => { R.wk = { y, w: ww }; go('week'); } });
+  });
+  Object.keys(S.months || {}).forEach(mk => {
+    const m = S.months[mk];
+    if (!(m.note || '').trim() && !(m.themes || []).length) return;
+    const [y, mm] = mk.split('-').map(Number);
+    out.push({ id: 'month:' + mk, kind: 'month', date: iso(new Date(y, mm - 1, 1)), obj: m, body: m.note || '',
+      label: MONTHS[mm - 1] + ' ' + y,
+      open: () => { R.year = y; R.mo = mm - 1; go('month'); } });
+  });
+  return out.sort((a, b) => a.date < b.date ? 1 : -1);
+}
+const journalById = id => journalEntries().find(j => j.id === id);
+
+/* the tag row shared by notes, days, weeks and months */
+function tagRow(obj, redraw, opts) {
+  opts = opts || {};
+  obj.themes = obj.themes || [];
+  const wrap = E('div', { style: 'margin-top:8px' });
+  const chips = E('div', { cls: 'chips' });
+  obj.themes.forEach((t, i) => chips.append(E('button', { cls: 'chip', style: 'font-size:12px;padding:5px 10px',
+    onclick: () => { obj.themes.splice(i, 1); save(true); redraw(); } }, [t, E('span', { style: 'opacity:.5', text: '\u00d7' })])));
+  const vocab = allThemeCounts().filter(t => !obj.themes.some(x => sameTheme(x, t.label))).slice(0, 6);
+  vocab.forEach(t => chips.append(E('button', { cls: 'chip', style: 'font-size:11.5px;padding:4px 9px;border-style:dashed;color:var(--mut)',
+    text: '+ ' + t.label, onclick: () => { obj.themes.push(t.label); save(true); redraw(); } })));
+  const inp = E('input', { type: 'text', placeholder: 'New thread', style: 'font-size:13px;max-width:150px' });
+  inp.addEventListener('blur', () => {
+    const v2 = inp.value.trim();
+    if (!v2) return;
+    if (!obj.themes.some(x => sameTheme(x, v2))) obj.themes.push(v2);
+    inp.value = ''; save(true); redraw();
+  });
+  chips.append(inp);
+  wrap.append(chips);
+  if (opts.link !== false) wrap.append(goalLink(obj, redraw));
+  if (opts.cite) {
+    wrap.append(E('div', { style: 'display:flex;gap:10px;align-items:center;margin-top:8px' }, [
+      E('button', { cls: 'box' + (obj.key ? ' on' : ''), style: 'flex:none;margin-top:0',
+        html: '<svg viewBox="0 0 12 12"><polyline points="1.5,6.5 4.5,9.5 10.5,2.5"/></svg>',
+        onclick: () => { obj.key = !obj.key; save(true); redraw(); } }),
+      E('span', { cls: 'pct', text: 'Cite this as evidence' })
+    ]));
+    if (obj.key) wrap.append(bindArea(obj, 'pull', 'Passage to quote \u2014 blank uses the note itself'));
+  }
+  return wrap;
+}
+
+
+/* notes, journal entries and sessions pointing at a goal or one of its milestones */
+function writingAbout(goalId, msId) {
+  const hit = o => o && o.g === goalId && (!msId || o.ms === msId) && (msId || !o.ms || true);
+  const out = [];
+  (S.notes || []).forEach(n => { if (hit(n) && (!msId || n.ms === msId))
+    out.push({ label: n.title || 'Untitled note', body: n.body || '', where: 'note', open: () => go('more', 'notes') }); });
+  journalEntries().forEach(j => { if (hit(j.obj) && (!msId || j.obj.ms === msId))
+    out.push({ label: j.label, body: j.body || '', where: j.kind, open: j.open }); });
+  S.studio.entries.forEach(e => { if (!e.draft && e.goal === goalId)
+    out.push({ label: e.title || 'Untitled session', body: e.claim || e.inAction || '', where: 'studio',
+      open: () => { studioView = 'list'; openEntry = e.id; go('studio'); } }); });
+  return out;
+}
+
+
 /* ===================== router ===================== */
 const now0 = new Date();
-let pullOpen = false, weekPullOpen = false;
+let pullOpen = false, weekPullOpen = false, weekGoalOpen = false, monthPickOpen = false;
 
 /* move or copy a pooled candidate into a week's list, depending on where it lives */
 function takeCandidate(c, W, wkKey) {
@@ -1166,6 +1490,16 @@ function render() {
   else if (R.tab === 'studio') v = viewStudio();
   else v = viewMore();
   v.classList.add('view');
+  if (updateFound && !(R.tab === 'more' && R.page === 'data')) {
+    app.append(E('button', {
+      style: 'display:flex;width:100%;justify-content:space-between;align-items:center;gap:10px;' +
+             'background:var(--wash);border:1px solid var(--edge);border-radius:3px;padding:10px 12px;margin-bottom:12px;text-align:left',
+      onclick: () => go('more', 'data')
+    }, [
+      E('span', { cls: 'eyebrow', style: 'color:var(--acc)', text: 'A newer version is ready' }),
+      E('span', { cls: 'pct', style: 'color:var(--acc)', text: 'Update \u203a' })
+    ]));
+  }
   app.append(v);
   renderSpine(); renderTabs();
 }
@@ -1317,6 +1651,32 @@ function viewToday() {
   }
   v.append(hc);
 
+  /* rituals */
+  const rit = ritualsFor(k);
+  if (rit.am.length || rit.pm.length) {
+    const rc = E('div', { cls: 'card' });
+    const totalR = rit.am.length + rit.pm.length;
+    const doneR = rit.am.concat(rit.pm).filter(r => ritualDone(k, r.id)).length;
+    rc.append(E('div', { cls: 'head' }, [E('h2', { text: 'Rituals' }),
+      E('span', { cls: 'pct', text: doneR + ' of ' + totalR })]));
+    [['am', 'Morning'], ['pm', 'Evening']].forEach(([which, label]) => {
+      if (!rit[which].length) return;
+      rc.append(E('h3', { style: 'margin:10px 0 2px', text: label }));
+      rit[which].forEach(r => {
+        const on = ritualDone(k, r.id);
+        rc.append(E('button', { style: 'display:flex;width:100%;gap:9px;align-items:center;padding:7px 0;text-align:left',
+          onclick: () => { toggleRitual(k, r.id); render(); } }, [
+          E('span', { cls: 'box' + (on ? ' on' : ''), style: 'flex:none;margin-top:0',
+            html: '<svg viewBox="0 0 12 12"><polyline points="1.5,6.5 4.5,9.5 10.5,2.5"/></svg>' }),
+          E('span', { style: 'flex:1;min-width:0;font-size:14.5px' + (on ? ';color:var(--faint)' : ''), text: r.t })
+        ]));
+      });
+    });
+    rc.append(E('button', { cls: 'btn ghost', style: 'margin-top:8px', text: 'Edit rituals',
+      onclick: () => { R.mo = parseIso(k).getMonth(); go('month'); } }));
+    v.append(rc);
+  }
+
   /* today's list */
   const tc = E('div', { cls: 'card' });
   tc.append(E('h2', { text: isNow ? "Today's list" : 'List for this day' }));
@@ -1359,6 +1719,7 @@ function viewToday() {
   tc.append(E('div', { cls: 'rule' }));
   tc.append(field(isNow ? 'Notes on today' : 'Notes', areaWithLinks(D, 'note',
     'What happened, what you noticed, what you made. Paste links freely.', 1, S.links)));
+  if ((D.note || '').trim() || (D.themes || []).length) tc.append(tagRow(D, render, { cite: true }));
   v.append(tc);
 
   /* carried over */
@@ -1421,7 +1782,19 @@ function viewToday() {
   wc.append(field('Weekly focus', bindArea(W, 'focus', 'The one thing this week is for.')));
   W.goals = W.goals || [];
   const wg = E('div');
-  for (let i = 0; i < 3; i++) wg.append(bindLine(W.goals, i, '', true));
+  if (!W.goals.length) wg.append(E('div', { cls: 'empty', text: 'None set. Open the week to name up to three.' }));
+  W.goals.forEach(gi => {
+    const owner = gi.p ? projectById(gi.p) : (gi.g ? S.goals.find(x => x.id === gi.g) : null);
+    wg.append(E('div', { cls: 'list-item' }, [
+      E('button', { cls: 'box' + (gi.d ? ' on' : ''), style: 'flex:none',
+        html: '<svg viewBox="0 0 12 12"><polyline points="1.5,6.5 4.5,9.5 10.5,2.5"/></svg>',
+        onclick: () => { gi.d = !gi.d; syncTaskToGoal(gi); save(true); render(); } }),
+      E('div', { cls: 'txt' }, [
+        E('div', { style: 'font-size:14.5px' + (gi.d ? ';color:var(--faint);text-decoration:line-through' : ''), text: gi.t || '\u2014' }),
+        owner ? E('div', { cls: 'pct', text: owner.title || '' }) : null
+      ])
+    ]));
+  });
   wc.append(field('Weekly goals', wg));
   if (W.todos.length) {
     const open = W.todos.filter(t => !t.d).length;
@@ -1501,8 +1874,29 @@ function viewWeek() {
 
   const c2 = E('div', { cls: 'card' });
   W.grat = W.grat || []; W.goals = W.goals || [];
-  const g2 = E('div'); for (let i = 0; i < 3; i++) g2.append(bindLine(W.goals, i, '', true));
-  c2.append(field('Weekly goals', g2));
+  c2.append(E('h2', { text: 'Weekly goals' }));
+  c2.append(E('p', { cls: 'lede', text: 'Three at most. Link each one to the goal or project it moves, and it counts as work toward it.' }));
+  c2.append(checkList(W.goals, 'Nothing set for this week.', render, { link: true, note: false }));
+  if (W.goals.length < 3) {
+    const cands = [].concat(
+      openProjects().map(p2 => ({ label: p2.title || 'Untitled project', sub: dueLabel(p2.due), p: p2.id, g: (p2.goals || [])[0] })),
+      S.goals.filter(g3 => !g3.completed).map(g3 => ({ label: g3.title || 'Untitled goal', sub: goalProgress(g3) + '%', g: g3.id })));
+    if (cands.length) {
+      c2.append(E('div', { cls: 'rule' }));
+      c2.append(E('button', { cls: 'btn ghost', style: 'padding-left:0',
+        text: (weekGoalOpen ? '\u2212' : '+') + ' Set one from a goal or project',
+        onclick: () => { weekGoalOpen = !weekGoalOpen; render(); } }));
+      if (weekGoalOpen) {
+        const list = E('div', { style: 'border-left:2px solid var(--rule);padding-left:11px;margin-top:6px' });
+        cands.forEach(c => list.append(E('button', { cls: 'menu-item', style: 'font-size:13px;padding:9px 0',
+          onclick: () => {
+            W.goals.push({ t: 'Move ' + c.label + ' forward', d: false, g: c.g || undefined, p: c.p || undefined });
+            weekGoalOpen = false; save(true); render();
+          }}, [c.label, E('span', { cls: 'pct', text: c.sub || '' })])));
+        c2.append(list);
+      }
+    }
+  }
   v.append(c2);
 
   /* gratitude gathered from the days */
@@ -1593,7 +1987,10 @@ function viewWeek() {
         E('button', { cls: 'box' + (t.d ? ' on' : ''),
           html: '<svg viewBox="0 0 12 12"><polyline points="1.5,6.5 4.5,9.5 10.5,2.5"/></svg>',
           onclick: () => { t.d = !t.d; save(); render(); } }),
-        E('span', { cls: (t.d ? 'done ' : '') + 'txt', style: 'font-size:14px;padding-top:2px', text: t.t || '—' })
+        E('div', { cls: 'txt' }, [
+          E('div', { cls: (t.d ? 'done' : ''), style: 'font-size:14px;padding-top:2px', text: t.t || '\u2014' }),
+          (t.n || '').trim() ? E('div', { cls: 'pct', text: t.n.trim().replace(/\n+/g, ' ').slice(0, 60) }) : null
+        ])
       ]));
     });
     row.append(body);
@@ -1670,6 +2067,7 @@ function viewWeek() {
     () => W.todos.filter(t => !t.d).map(t => ({ title: t.t, due: iso(sun) })))));
   c3.append(E('div', { cls: 'rule' }));
   c3.append(field('Notes', areaWithLinks(W, 'notes', '', 1, S.links)));
+  if ((W.notes || '').trim() || (W.themes || []).length) c3.append(tagRow(W, render, { cite: true }));
   v.append(c3);
 
   /* where the week's effort actually went */
@@ -1761,9 +2159,28 @@ function viewMonth() {
   M.goals.forEach((g, i) => {
     const blk = E('div', { style: i ? 'margin-top:18px;padding-top:14px;border-top:1px solid var(--rule)' : '' });
     blk.append(field('Goal ' + (i + 1), bindText(g, 't', 'What are you moving this month?')));
+    const msel = E('select', { style: 'width:100%;padding:7px 0;border:0;border-bottom:1px solid var(--rule);background:transparent',
+      onchange: e => { const val = e.target.value;
+        if (val.slice(0, 2) === 'p:') { g.p = val.slice(2); g.g = (projectById(g.p) || {}).goals && projectById(g.p).goals[0] || ''; }
+        else { g.g = val.slice(2); g.p = ''; }
+        save(); render(); } });
+    msel.append(E('option', { value: 'g:' }, 'Not linked'));
+    openProjects().forEach(p2 => {
+      const o = E('option', { value: 'p:' + p2.id }, 'Project \u00b7 ' + (p2.title || 'Untitled'));
+      if (g.p === p2.id) o.setAttribute('selected', 'selected');
+      msel.append(o);
+    });
+    S.goals.filter(x => !x.completed).forEach(x => {
+      const o = E('option', { value: 'g:' + x.id }, 'Goal \u00b7 ' + (x.title || 'Untitled'));
+      if (!g.p && g.g === x.id) o.setAttribute('selected', 'selected');
+      msel.append(o);
+    });
+    blk.append(field('Moves', msel));
+    const owner = g.p ? projectById(g.p) : (g.g ? S.goals.find(x => x.id === g.g) : null);
+    if (owner) blk.append(E('div', { cls: 'bar' }, E('i', { style: 'width:' +
+      (g.p ? projectProgress(owner) : goalProgress(owner)) + '%' })));
     g.focus = g.focus || [];
-    const fl = E('div'); for (let j = 0; j < 3; j++) fl.append(bindLine(g.focus, j, 'Focus ' + (j + 1), true));
-    blk.append(field('Focus', fl));
+    blk.append(field('Focus', checkList(g.focus, 'What are the three moves?', render, { link: true, note: false })));
     blk.append(field('Notes', bindArea(g, 'notes')));
     gc.append(blk);
   });
@@ -1772,18 +2189,128 @@ function viewMonth() {
   /* rituals */
   const rc = E('div', { cls: 'card' });
   rc.append(E('h2', { text: 'Rituals' }));
+  rc.append(E('p', { cls: 'lede', text: 'These appear on Today to be ticked off. The percentage is how often you have kept each one this month.' }));
   M.am = M.am || []; M.pm = M.pm || [];
-  const am = E('div'); for (let i = 0; i < 5; i++) am.append(bindLine(M.am, i, '', true));
-  rc.append(field('My morning rituals', am));
-  const pm = E('div'); for (let i = 0; i < 5; i++) pm.append(bindLine(M.pm, i, '', true));
-  rc.append(field('My evening rituals', pm));
+  [['am', 'Morning'], ['pm', 'Evening']].forEach(([which, label]) => {
+    const box = E('div');
+    M[which].forEach((r, i) => {
+      const rate = ritualRate(r.id, Y, m);
+      const line = E('div', { style: 'padding:7px 0;border-top:' + (i ? '1px solid var(--rule)' : '0') });
+      const inp = E('input', { type: 'text', placeholder: label + ' ritual',
+        oninput: e => { r.t = e.target.value; save(); } });
+      inp.value = r.t || '';
+      line.append(E('div', { style: 'display:flex;gap:9px;align-items:center' }, [
+        E('span', { cls: 'num', text: (i + 1) + '.' }),
+        E('div', { style: 'flex:1;min-width:0' }, inp),
+        E('span', { cls: 'pct', style: 'width:38px;text-align:right', text: rate.days ? rate.pct + '%' : '' }),
+        E('button', { cls: 'x', text: '\u00d7', onclick: () => { M[which].splice(i, 1); save(true); render(); } })
+      ]));
+      if (rate.days) line.append(E('div', { cls: 'bar', style: 'margin-left:19px' },
+        E('i', { style: 'width:' + rate.pct + '%' })));
+      box.append(line);
+    });
+    box.append(E('button', { cls: 'btn ghost', style: 'margin-top:8px', text: '+ Add',
+      onclick: () => { M[which].push({ id: uid(), t: '' }); save(true); render(); } }));
+    rc.append(field('My ' + label.toLowerCase() + ' rituals', box));
+  });
   v.append(rc);
 
+  /* habits, and what they are carrying */
+  if (habitsFor().length) {
+    const hc2 = E('div', { cls: 'card' });
+    hc2.append(E('div', { cls: 'head' }, [E('h2', { text: 'Habits this month' }),
+      E('button', { cls: 'btn ghost', text: 'Edit', onclick: () => go('more', 'habits') })]));
+    habitsFor().forEach(h => {
+      const rate = habitMonthRate(h.id, Y, m);
+      const owner = h.p ? projectById(h.p) : (h.g ? S.goals.find(x => x.id === h.g) : null);
+      hc2.append(E('div', { style: 'padding:10px 0;border-top:1px solid var(--rule)' }, [
+        E('div', { style: 'display:flex;gap:9px;align-items:baseline' }, [
+          E('span', { style: `width:9px;height:9px;border-radius:50%;flex:none;background:hsl(${h.hue},62%,50%)` }),
+          E('span', { style: 'flex:1;min-width:0;font-size:14.5px', text: h.name || 'Habit' }),
+          E('span', { cls: 'pct', text: rate.hit + '/' + rate.days + '  ' + rate.pct + '%' })
+        ]),
+        owner ? E('div', { cls: 'pct', style: 'padding-left:18px', text: 'carries ' + (owner.title || '') }) : null,
+        E('div', { cls: 'bar', style: 'margin-left:18px' },
+          E('i', { style: `width:${rate.pct}%;background:hsl(${h.hue},62%,48%)` }))
+      ]));
+    });
+    v.append(hc2);
+  }
+
+  /* notes on the month */
+  const mnc = E('div', { cls: 'card' });
+  mnc.append(E('h2', { text: 'Notes on the month' }));
+  mnc.append(areaWithLinks(M, 'note', 'What this month was actually like.', 1, S.links));
+  if ((M.note || '').trim() || (M.themes || []).length) mnc.append(tagRow(M, render, { cite: true }));
+  v.append(mnc);
+
   /* review */
+  M.review = M.review || {}; M.review.byGoal = M.review.byGoal || {}; M.snap = M.snap || {};
   const vc = E('div', { cls: 'card' });
   vc.append(E('h2', { text: MONTHS[m] + ' review' }));
   vc.append(E('p', { cls: 'lede', text: 'Fill this at the end of the month — it feeds the mid-year and yearly reviews.' }));
-  vc.append(renderFields(MONTH_REVIEW, M.review));
+
+  /* top three, drawn from what actually got finished */
+  M.review.top3 = M.review.top3 || [];
+  const fin = finishedInMonth(Y, m);
+  const t3 = E('div');
+  for (let j = 0; j < 3; j++) t3.append(bindLine(M.review.top3, j, '', true));
+  if (fin.length) {
+    t3.append(E('button', { cls: 'btn ghost', style: 'padding-left:0;margin-top:6px',
+      text: (monthPickOpen ? '\u2212' : '+') + ' From what you finished (' + fin.length + ')',
+      onclick: () => { monthPickOpen = !monthPickOpen; render(); } }));
+    if (monthPickOpen) {
+      const list = E('div', { style: 'border-left:2px solid var(--rule);padding-left:11px;margin-top:6px;max-height:280px;overflow-y:auto' });
+      fin.slice(0, 30).forEach(o => list.append(E('div', { cls: 'list-item' }, [
+        E('div', { cls: 'txt' }, [E('div', { style: 'font-size:14px', text: o.text }),
+          E('div', { cls: 'pct', text: o.from })]),
+        E('button', { cls: 'tag acc', text: 'Use', onclick: () => {
+          let slot = 2;
+          for (let n = 0; n < 3; n++) if (!((M.review.top3[n] || '').trim())) { slot = n; break; }
+          M.review.top3[slot] = o.text;
+          monthPickOpen = false; save(true); render();
+        }})
+      ])));
+      t3.append(list);
+    }
+  }
+  vc.append(field('Top three things I accomplished this month', t3));
+
+  /* goal by goal, with the movement made */
+  const active = activeInMonth(Y, m);
+  if (active.length) {
+    vc.append(E('div', { cls: 'rule' }));
+    vc.append(E('h3', { text: 'Goal by goal' }));
+    active.forEach(a => {
+      const was = M.snap[a.key];
+      const moved = was === undefined ? null : a.pct - was;
+      M.review.byGoal[a.key] = M.review.byGoal[a.key] || {};
+      const blk = E('div', { style: 'padding:12px 0;border-top:1px solid var(--rule)' });
+      blk.append(E('button', { style: 'display:flex;width:100%;justify-content:space-between;gap:10px;align-items:baseline;text-align:left',
+        onclick: () => a.kind === 'project' ? go('goals', 'project', a.id) : go('goals', null, a.id) }, [
+        E('span', { style: 'font-size:14.5px', text: a.obj.title || 'Untitled' }),
+        E('span', { cls: 'pct', text: a.pct + '%' + (moved === null ? '' : moved > 0 ? '  \u2191' + moved : moved < 0 ? '  \u2193' + Math.abs(moved) : '  \u2014') })
+      ]));
+      blk.append(E('div', { cls: 'bar' }, E('i', { style: 'width:' + a.pct + '%' })));
+      const carrying = habitsForGoal(a.id);
+      if (carrying.length) {
+        const line = carrying.map(h => (h.name || 'habit') + ' ' + habitMonthRate(h.id, Y, m).pct + '%').join(' \u00b7 ');
+        blk.append(E('div', { cls: 'pct', style: 'margin-top:6px', text: 'Habits: ' + line }));
+      }
+      blk.append(field('How it went', bindArea(M.review.byGoal[a.key], 'felt')));
+      blk.append(field('Next month', bindArea(M.review.byGoal[a.key], 'next')));
+      vc.append(blk);
+    });
+    vc.append(E('div', { cls: 'btnrow' }, [
+      E('button', { cls: 'btn', text: Object.keys(M.snap).length ? 'Update the mark' : 'Mark where they stand',
+        onclick: () => { active.forEach(a => M.snap[a.key] = a.pct); save(true); render(); } })
+    ]));
+    vc.append(E('p', { cls: 'lede', style: 'margin-top:8px',
+      text: 'Marking now lets next month show the movement rather than only the position.' }));
+  }
+
+  vc.append(E('div', { cls: 'rule' }));
+  vc.append(renderFields(MONTH_REVIEW.filter(f => f.k !== 'top3'), M.review));
   v.append(vc);
 
   /* weeks of this month */
@@ -2024,6 +2551,10 @@ function viewGoal(id) {
       E('span', { cls: 'eyebrow', text: 'By' }),
       E('div', { style: 'flex:1' }, bindText(m, 'due', '', 'date'))
     ]));
+    const msWritten = m.id ? writingAbout(g.id, m.id) : [];
+    if (msWritten.length) blk.append(E('div', { cls: 'pct', style: 'padding-left:29px',
+      text: msWritten.length + ' note' + (msWritten.length === 1 ? '' : 's') + ' against this \u00b7 ' +
+        msWritten.slice(0, 2).map(w3 => w3.label).join(', ') }));
     if (long) {
       m.kt = m.kt || [];
       const kb = E('div', { style: 'padding-left:29px' });
@@ -2099,6 +2630,62 @@ function viewGoal(id) {
     v.append(pc2);
   }
 
+  /* what has been written about it */
+  const written = writingAbout(g.id);
+  if (written.length) {
+    const wc2 = E('div', { cls: 'card' });
+    wc2.append(E('div', { cls: 'head' }, [E('h2', { text: 'Written about this' }),
+      E('span', { cls: 'pct', text: written.length })]));
+    written.slice(0, 12).forEach(w2 => wc2.append(E('button', {
+      style: 'display:block;width:100%;text-align:left;padding:10px 0;border-top:1px solid var(--rule)',
+      onclick: w2.open }, [
+      E('div', { style: 'display:flex;justify-content:space-between;gap:10px' }, [
+        E('span', { style: 'font-size:14.5px', text: w2.label }),
+        E('span', { cls: 'pct', text: w2.where })
+      ]),
+      (w2.body || '').trim() ? E('div', { cls: 'pct', style: 'margin-top:2px',
+        text: w2.body.trim().replace(/\n+/g, ' ').slice(0, 80) }) : null
+    ])));
+    if (written.length > 12) wc2.append(E('div', { cls: 'pct', style: 'margin-top:8px', text: 'showing the most recent 12' }));
+    v.append(wc2);
+  }
+
+  /* what it is costing */
+  const spentG = goalSpent(g.id);
+  const projsB = S.projects.filter(p2 => (p2.goals || []).includes(g.id));
+  const plannedG = projsB.reduce((a, p2) => a + num(p2.budget), 0);
+  if (spentG || plannedG) {
+    const mc = E('div', { cls: 'card' });
+    mc.append(E('div', { cls: 'head' }, [E('h2', { text: 'What it is costing' }),
+      E('button', { cls: 'btn ghost', text: 'Budget', onclick: () => go('more', 'budget') })]));
+    mc.append(E('div', { style: 'display:grid;grid-template-columns:1fr 1fr;gap:10px' }, [
+      E('div', { cls: 'stat' }, [E('b', { text: money(plannedG) }), E('span', { text: 'Planned' })]),
+      E('div', { cls: 'stat' }, [E('b', { text: money(spentG) }), E('span', { text: 'Committed' })])
+    ]));
+    if (plannedG) mc.append(E('div', { cls: 'bar', style: 'margin-top:10px' },
+      E('i', { style: 'width:' + Math.min(100, Math.round(spentG / plannedG * 100)) + '%' +
+        (spentG > plannedG ? ';background:#B23A3A' : '') })));
+    v.append(mc);
+  }
+
+  /* the practice underneath it */
+  const carrying = habitsForGoal(g.id);
+  if (carrying.length) {
+    const hc3 = E('div', { cls: 'card' });
+    hc3.append(E('h2', { text: 'Habits carrying this' }));
+    carrying.forEach(h => hc3.append(E('div', { style: 'padding:10px 0;border-top:1px solid var(--rule)' }, [
+      E('div', { style: 'display:flex;gap:9px;align-items:baseline' }, [
+        E('span', { style: `width:9px;height:9px;border-radius:50%;flex:none;background:hsl(${h.hue},62%,50%)` }),
+        E('span', { style: 'flex:1;min-width:0;font-size:14.5px', text: h.name || 'Habit' }),
+        E('span', { cls: 'pct', text: streak(h.id) + 'd streak \u00b7 ' + habitRate(h.id, 30) + '%' })
+      ]),
+      E('div', { cls: 'bar', style: 'margin-left:18px' },
+        E('i', { style: `width:${habitRate(h.id, 30)}%;background:hsl(${h.hue},62%,48%)` }))
+    ])));
+    hc3.append(E('button', { cls: 'btn ghost', style: 'margin-top:10px', text: 'Edit habits', onclick: () => go('more', 'habits') }));
+    v.append(hc3);
+  }
+
   /* work logged against this goal */
   const linked = tasksForGoal(g.id);
   if (linked.length) {
@@ -2158,7 +2745,7 @@ function viewGoal(id) {
    tasks. Day and week tasks can nest inside it. */
 
 const newProject = () => ({ id: uid(), title: '', due: '', goals: [], notes: '',
-  tasks: [], done: '', created: iso(new Date()) });
+  tasks: [], costs: [], budget: '', done: '', created: iso(new Date()) });
 
 const projectById = id => S.projects.find(p => p.id === id);
 const openProjects = () => S.projects.filter(p => !p.done);
@@ -2181,6 +2768,37 @@ function projectProgress(p) {
   if (!total) return p.done ? 100 : 0;
   return Math.round((own.filter(t => t.d).length + sched.filter(x => x.t.d).length) / total * 100);
 }
+/* money spent against a project: its own lines, plus costs carried on tasks */
+function taskCostsFor(pid) {
+  const out = [];
+  Object.keys(S.days).sort().forEach(dk => (S.days[dk].tasks || []).forEach(t => {
+    if (t.p === pid && num(t.c)) out.push({ t: t.t, v: num(t.c), where: dk });
+  }));
+  Object.keys(S.weeks).sort().forEach(wk => (S.weeks[wk].todos || []).forEach(t => {
+    if (t.p === pid && num(t.c)) out.push({ t: t.t, v: num(t.c), where: wk.replace('-W', ' week ') });
+  }));
+  (projectById(pid) || { tasks: [] }).tasks.forEach(t => {
+    if (num(t.c)) out.push({ t: t.t, v: num(t.c), where: 'planned' });
+  });
+  return out;
+}
+function projectSpent(p) {
+  return (p.costs || []).reduce((a, c) => a + num(c.v), 0) +
+    taskCostsFor(p.id).reduce((a, c) => a + c.v, 0);
+}
+/* everything committed toward a goal, through its projects and its own tasks */
+function goalSpent(gid) {
+  let total = S.projects.filter(p => (p.goals || []).includes(gid)).reduce((a, p) => a + projectSpent(p), 0);
+  const seen = new Set();
+  Object.keys(S.days).forEach(dk => (S.days[dk].tasks || []).forEach(t => {
+    if (t.g === gid && !t.p && num(t.c)) total += num(t.c);
+  }));
+  Object.keys(S.weeks).forEach(wk => (S.weeks[wk].todos || []).forEach(t => {
+    if (t.g === gid && !t.p && num(t.c)) total += num(t.c);
+  }));
+  return total;
+}
+
 function daysUntil(d) { return d ? Math.round((parseIso(d) - new Date()) / 86400000) : null; }
 function dueLabel(d) {
   const n = daysUntil(d);
@@ -2269,6 +2887,36 @@ function viewProject(id) {
   tc.append(checkList(p.tasks, 'Nothing planned yet.', render));
   v.append(tc);
 
+  const bud = E('div', { cls: 'card' });
+  const spent = projectSpent(p), planned = num(p.budget);
+  bud.append(E('div', { cls: 'head' }, [E('h2', { text: 'Budget' }),
+    planned ? E('span', { cls: 'pct', style: spent > planned ? 'color:#B23A3A' : '',
+      text: money(spent) + ' of ' + money(planned) }) : null]));
+  bud.append(field('Planned', bindText(p, 'budget', '0')));
+  if (planned) {
+    const pctB = Math.min(100, Math.round(spent / planned * 100));
+    bud.append(E('div', { cls: 'bar' }, E('i', { style: 'width:' + pctB + '%' +
+      (spent > planned ? ';background:#B23A3A' : '') })));
+    bud.append(E('div', { cls: 'pct', style: 'margin-top:6px',
+      text: spent > planned ? money(spent - planned) + ' over' : money(planned - spent) + ' left' }));
+  }
+  p.costs = p.costs || [];
+  bud.append(E('h3', { style: 'margin:14px 0 0', text: 'Costs' }));
+  if (!p.costs.length) bud.append(E('div', { cls: 'empty', text: 'Materials, freight, framing, fees.' }));
+  p.costs.forEach((c, i) => bud.append(moneyRow(p.costs, i, render)));
+  bud.append(E('button', { cls: 'btn ghost', style: 'margin-top:8px', text: '+ Add cost',
+    onclick: () => { p.costs.push({ id: uid(), n: '', v: '' }); save(); render(); } }));
+  const tc2 = taskCostsFor(p.id);
+  if (tc2.length) {
+    bud.append(E('h3', { style: 'margin:14px 0 0', text: 'From tasks' }));
+    tc2.forEach(c => bud.append(E('div', { cls: 'list-item' }, [
+      E('div', { cls: 'txt' }, [E('div', { style: 'font-size:14px', text: c.t || '\u2014' }),
+        E('div', { cls: 'pct', text: c.where })]),
+      E('span', { cls: 'pct', text: money(c.v) })
+    ])));
+  }
+  v.append(bud);
+
   const sched = tasksForProject(p.id);
   if (sched.length) {
     const sc = E('div', { cls: 'card' });
@@ -2284,6 +2932,18 @@ function viewProject(id) {
       ])
     ])));
     v.append(sc);
+  }
+
+  const carryP = habitsForGoal(p.id);
+  if (carryP.length) {
+    const hc = E('div', { cls: 'card' });
+    hc.append(E('h2', { text: 'Habits carrying this' }));
+    carryP.forEach(h => hc.append(E('div', { cls: 'list-item' }, [
+      E('span', { style: `width:9px;height:9px;border-radius:50%;flex:none;margin-top:6px;background:hsl(${h.hue},62%,50%)` }),
+      E('span', { cls: 'txt', style: 'font-size:14.5px', text: h.name || 'Habit' }),
+      E('span', { cls: 'pct', text: habitRate(h.id, 30) + '%' })
+    ])));
+    v.append(hc);
   }
 
   const fc = E('div', { cls: 'card' });
@@ -2312,7 +2972,8 @@ const MORE_PAGES = [
   ['habits', 'Habits', 'Add, colour and retire the habits you track'],
   ['year', 'Year at a glance', 'Fifty-two weeks as one image'],
   ['reviews', 'Reviews', 'Mid-year reset and the yearly review'],
-  ['budget', 'Budget', 'Earn, invest, save, spend'],
+  ['budget', 'Budget', 'What comes in, what goes out, what the projects cost'],
+  ['wealth', 'Wealth', 'Assets, liabilities and the direction of travel'],
   ['lists', 'MiLists', 'Any list you want to keep'],
   ['sources', 'Sources', 'Articles, videos and papers, loose or attached'],
   ['notes', 'Notes', 'Loose pages'],
@@ -2329,6 +2990,7 @@ function viewMore() {
   if (R.page === 'year') return pageYear();
   if (R.page === 'reviews') return pageReviews();
   if (R.page === 'budget') return pageBudget();
+  if (R.page === 'wealth') return pageWealth();
   if (R.page === 'lists') return pageLists();
   if (R.page === 'notes') return pageNotes();
   if (R.page === 'sources') return pageSources();
@@ -2397,7 +3059,7 @@ function pageFound() {
 function pageHabits() {
   const v = E('div');
   v.append(backBar('Habits'));
-  v.append(E('p', { cls: 'lede', text: 'One or two per goal. Small enough that a bad day cannot break them.' }));
+  v.append(E('p', { cls: 'lede', text: 'One or two per goal. Small enough that a bad day cannot break them \u2014 and linked to what they carry, so a goal can show the practice underneath it.' }));
   const c = E('div', { cls: 'card' });
   if (!S.habits.length) c.append(E('div', { cls: 'empty', text: 'No habits yet.' }));
   S.habits.forEach((h, i) => {
@@ -2409,7 +3071,8 @@ function pageHabits() {
       E('button', { cls: 'x', text: '×', onclick: () => { if (confirm('Remove this habit and its history?')) { S.habits.splice(i, 1); save(true); render(); } } })
     ]));
     row.append(E('div', { cls: 'pct', style: 'margin-top:6px;padding-left:32px',
-      text: streak(h.id) + ' day streak · ' + habitRate(h.id, 30) + '% of the last 30 days' }));
+      text: streak(h.id) + ' day streak \u00b7 ' + habitRate(h.id, 30) + '% of the last 30 days' }));
+    row.append(goalLink(h, render));
     c.append(row);
   });
   c.append(E('button', { cls: 'btn fill', style: 'margin-top:14px', text: '+ Add habit',
@@ -2522,8 +3185,9 @@ function pageBudget() {
   const v = E('div');
   v.append(backBar('Budget'));
   v.append(E('div', { style: 'margin:-6px 0 12px' }, yearPicker()));
-  v.append(E('p', { cls: 'lede', text: 'What comes in and goes out each month, what you own and owe, and the four buckets \u2014 earn, invest, save, spend.' }));
-  financeSections(v);
+  v.append(E('p', { cls: 'lede', text: 'What comes in and goes out each month, what the projects are costing, and the year\u2019s intentions \u2014 earn, invest, save, spend.' }));
+  budgetSections(v);
+  projectBudgetCard(v);
   YF().sav = YF().sav || {};
   v.append(E('h2', { style: 'margin:22px 0 10px', text: 'The year ahead' }));
   BUDGET.forEach(sec => {
@@ -2571,10 +3235,64 @@ function pageLists() {
 }
 
 /* ---------- notes ---------- */
+let noteFilter = null, noteScope = 'all';
+
 function pageNotes() {
   const v = E('div');
   v.append(backBar('Notes'));
-  S.notes.forEach((n, i) => {
+
+  const vocab = allThemeCounts();
+  if (vocab.length) {
+    const chips = E('div', { cls: 'chips', style: 'margin-bottom:14px' });
+    vocab.forEach(t => chips.append(E('button', {
+      cls: 'chip' + (sameTheme(noteFilter, t.label) ? ' on' : ''),
+      style: sameTheme(noteFilter, t.label) ? 'background:var(--acc)' : '',
+      onclick: () => { noteFilter = sameTheme(noteFilter, t.label) ? null : t.label; render(); }
+    }, [t.label, E('span', { style: 'opacity:.55;font-size:12px',
+      text: t.notes + (t.sessions ? '\u00b7' + t.sessions : '') })])));
+    v.append(chips);
+    if (noteFilter) {
+      const inStudio = S.studio.entries.filter(e => !e.draft && (e.themes || []).some(x => sameTheme(x, noteFilter))).length;
+      v.append(E('p', { cls: 'lede', text: inStudio
+        ? 'This thread also runs through ' + inStudio + ' studio session' + (inStudio === 1 ? '' : 's') + '.'
+        : 'No studio sessions on this thread yet.' }));
+    }
+  }
+  const scopes = [['all', 'Everything'], ['loose', 'Loose notes'], ['journal', 'From the diary']];
+  const sc2 = E('div', { cls: 'chips', style: 'margin-bottom:14px' });
+  scopes.forEach(([k, label]) => sc2.append(E('button', {
+    cls: 'chip' + (noteScope === k ? ' on' : ''), style: noteScope === k ? 'background:var(--acc)' : '',
+    text: label, onclick: () => { noteScope = k; render(); } })));
+  v.append(sc2);
+
+  if (noteScope !== 'loose') {
+    const jn = journalEntries().filter(j => !noteFilter || (j.obj.themes || []).some(x => sameTheme(x, noteFilter)));
+    if (jn.length) {
+      const jc = E('div', { cls: 'card' });
+      jc.append(E('div', { cls: 'head' }, [E('h2', { text: 'From the diary' }),
+        E('span', { cls: 'pct', text: jn.length })]));
+      jc.append(E('p', { cls: 'lede', text: 'Day, week and month notes. They stay where you wrote them \u2014 this is a way to read across them.' }));
+      jn.slice(0, 40).forEach(j => {
+        const blk = E('div', { style: 'padding:12px 0;border-top:1px solid var(--rule)' });
+        blk.append(E('button', { style: 'display:flex;width:100%;justify-content:space-between;gap:10px;text-align:left',
+          onclick: j.open }, [
+          E('span', { cls: 'eyebrow', style: 'color:var(--acc)', text: j.label }),
+          E('span', { cls: 'pct', text: j.kind + ' \u203a' })
+        ]));
+        if ((j.body || '').trim()) blk.append(E('p', { style: 'margin:6px 0 0;font-size:14.5px' },
+          linkified(j.body.trim().length > 300 ? j.body.trim().slice(0, 300) + '\u2026' : j.body.trim())));
+        blk.append(tagRow(j.obj, render, { cite: true }));
+        jc.append(blk);
+      });
+      if (jn.length > 40) jc.append(E('div', { cls: 'pct', style: 'margin-top:10px', text: 'showing the most recent 40' }));
+      v.append(jc);
+    }
+  }
+
+  if (noteScope === 'journal') return v;
+
+  S.notes.filter(n => !noteFilter || (n.themes || []).some(x => sameTheme(x, noteFilter))).forEach(n => {
+    const i = S.notes.indexOf(n);
     const c = E('div', { cls: 'card' });
     c.append(E('div', { style: 'display:flex;gap:8px;align-items:center' }, [
       E('div', { style: 'flex:1' }, (() => {
@@ -2586,13 +3304,15 @@ function pageNotes() {
     ]));
     n.links = n.links || [];
     c.append(areaWithLinks(n, 'body', 'Write…', 1, n.links));
+    c.append(tagRow(n, render, { cite: true }));
     c.append(E('div', { cls: 'rule' }));
     c.append(linkList(n.links, render, { empty: 'No links on this note.' }));
     v.append(c);
   });
   if (!S.notes.length) v.append(E('p', { cls: 'lede', text: 'Loose pages for anything that does not belong to a week.' }));
   v.append(E('button', { cls: 'btn fill', text: '+ New note',
-    onclick: () => { S.notes.unshift({ id: uid(), title: '', body: '', up: iso(new Date()) }); save(); render(); } }));
+    onclick: () => { S.notes.unshift({ id: uid(), title: '', body: '', themes: [], links: [],
+      key: false, pull: '', date: iso(new Date()), up: iso(new Date()) }); save(); render(); } }));
   return v;
 }
 
@@ -2692,6 +3412,23 @@ function pageData() {
   oc.append(lf);
   oc.append(E('button', { cls: 'btn', style: 'margin-top:10px', text: 'Import from a file instead', onclick: () => lf.click() }));
   v.append(oc);
+
+  /* version */
+  const uc = E('div', { cls: updateFound ? 'card on' : 'card' });
+  uc.append(E('h2', { text: 'Version' }));
+  uc.append(E('div', { cls: 'pct', text: 'This copy: ' + BUILD }));
+  if (updateFound) {
+    uc.append(E('p', { cls: 'lede', style: 'margin-top:8px',
+      text: 'A newer build is on the server (' + updateFound + '). Updating reloads the page \u2014 nothing you have written is affected.' }));
+    uc.append(E('button', { cls: 'btn fill', style: 'margin-top:4px', text: 'Update now', onclick: applyUpdate }));
+  } else {
+    uc.append(E('div', { cls: 'btnrow' }, [
+      E('button', { cls: 'btn', text: 'Check for updates', onclick: () => checkForUpdate(true) })
+    ]));
+  }
+  uc.append(E('p', { cls: 'lede', style: 'margin-top:10px',
+    text: 'Home Screen apps hold on to their copy hard. If an update will not take, delete the icon, open the site in Safari, and add it again \u2014 your writing lives with the address, not the icon, so it survives.' }));
+  v.append(uc);
 
   const ic = E('div', { cls: 'card' });
   ic.append(E('h2', { text: 'Keep it on your phone' }));
@@ -3006,6 +3743,16 @@ function pageLoose() {
 }
 
 
+/* ---------- wealth ---------- */
+function pageWealth() {
+  const v = E('div');
+  v.append(backBar('Wealth'));
+  v.append(E('p', { cls: 'lede', text: 'Not the month, the position: what you own, what you owe, and which way it is moving. Worth marking once a month and otherwise leaving alone.' }));
+  wealthSections(v);
+  return v;
+}
+
+
 /* ===================== balance sheet and cashflow ===================== */
 /* Assets, liabilities and recurring flows carry across years, so they live
    outside the per-year budget prompts. */
@@ -3055,7 +3802,7 @@ function moneyRow(arr, i, redraw, withFreq) {
   return row;
 }
 
-function financeSections(v) {
+function budgetSections(v) {
   const F = finance();
 
   /* ---- what comes in and goes out ---- */
@@ -3096,7 +3843,52 @@ function financeSections(v) {
   });
   v.append(fc);
 
-  /* ---- what you own and owe ---- */
+}
+
+/* the balance sheet in the export */
+function financeMarkdown(out, put) {
+  const F = finance();
+  if (!F.flows.length && !F.assets.length && !F.liabs.length &&
+      !S.projects.some(p => num(p.budget) || projectSpent(p))) return;
+  out.push('\n## Money\n');
+  const liveP = S.projects.filter(p => num(p.budget) || projectSpent(p));
+  if (liveP.length) {
+    out.push('**Project budgets**');
+    liveP.forEach(p => out.push('- ' + (p.title || 'Untitled project') + ' — ' +
+      money(projectSpent(p)) + (num(p.budget) ? ' of ' + money(num(p.budget)) : ' committed') +
+      ((p.goals || []).length ? '. Serves ' + p.goals.map(id => (S.goals.find(g => g.id === id) || {}).title || 'a goal').join(', ') : '')));
+    out.push('');
+  }
+  const inM = monthlyOf(F.flows, 'in'), outM = monthlyOf(F.flows, 'out');
+  if (F.flows.length) {
+    out.push('**Every month**  \nIn ' + money(inM) + ', out ' + money(outM) +
+      ', leaving ' + money(inM - outM) + '.\n');
+    ['in', 'out'].forEach(k => {
+      const rows = F.flows.filter(x => x.k === k && (x.n || x.v));
+      if (!rows.length) return;
+      out.push('**' + (k === 'in' ? 'Coming in' : 'Going out') + '**');
+      rows.forEach(x => out.push('- ' + (x.n || 'Unnamed') + ' — ' + money(num(x.v)) + ' ' + freqName(x.f)));
+      out.push('');
+    });
+  }
+  if (F.assets.length || F.liabs.length) {
+    out.push('**Balance sheet**  \nAssets ' + money(sumOf(F.assets)) + ', liabilities ' +
+      money(sumOf(F.liabs)) + ', net ' + money(sumOf(F.assets) - sumOf(F.liabs)) + '.\n');
+    [['assets', 'Assets'], ['liabs', 'Liabilities']].forEach(([k, label]) => {
+      if (!F[k].length) return;
+      out.push('**' + label + '**');
+      F[k].forEach(x => out.push('- ' + (x.n || 'Unnamed') + ' — ' + money(num(x.v))));
+      out.push('');
+    });
+  }
+  if (F.snaps.length > 1) {
+    out.push('**Net position over time**');
+    F.snaps.forEach(s => out.push('- ' + s.ym + ': ' + money(s.net)));
+    out.push('');
+  }
+}
+function wealthSections(v) {
+  const F = finance();
   const A = sumOf(F.assets), L = sumOf(F.liabs), net = A - L;
   const bc = E('div', { cls: 'card' });
   bc.append(E('h2', { text: 'What you own and owe' }));
@@ -3163,39 +3955,51 @@ function financeSections(v) {
   v.append(bc);
 }
 
-/* the balance sheet in the export */
-function financeMarkdown(out, put) {
-  const F = finance();
-  if (!F.flows.length && !F.assets.length && !F.liabs.length) return;
-  out.push('\n## Money\n');
-  const inM = monthlyOf(F.flows, 'in'), outM = monthlyOf(F.flows, 'out');
-  if (F.flows.length) {
-    out.push('**Every month**  \nIn ' + money(inM) + ', out ' + money(outM) +
-      ', leaving ' + money(inM - outM) + '.\n');
-    ['in', 'out'].forEach(k => {
-      const rows = F.flows.filter(x => x.k === k && (x.n || x.v));
-      if (!rows.length) return;
-      out.push('**' + (k === 'in' ? 'Coming in' : 'Going out') + '**');
-      rows.forEach(x => out.push('- ' + (x.n || 'Unnamed') + ' — ' + money(num(x.v)) + ' ' + freqName(x.f)));
-      out.push('');
-    });
+
+/* what the projects are costing */
+function projectBudgetCard(v) {
+  const live = S.projects.filter(p => !p.done || projectSpent(p));
+  const pc = E('div', { cls: 'card' });
+  pc.append(E('div', { cls: 'head' }, [E('h2', { text: 'Project budgets' }),
+    E('button', { cls: 'btn ghost', text: 'Projects', onclick: () => go('goals') })]));
+  if (!live.length) {
+    pc.append(E('div', { cls: 'empty', text: 'No projects with money attached yet. Open a project and set what it is meant to cost.' }));
+    v.append(pc);
+    return;
   }
-  if (F.assets.length || F.liabs.length) {
-    out.push('**Balance sheet**  \nAssets ' + money(sumOf(F.assets)) + ', liabilities ' +
-      money(sumOf(F.liabs)) + ', net ' + money(sumOf(F.assets) - sumOf(F.liabs)) + '.\n');
-    [['assets', 'Assets'], ['liabs', 'Liabilities']].forEach(([k, label]) => {
-      if (!F[k].length) return;
-      out.push('**' + label + '**');
-      F[k].forEach(x => out.push('- ' + (x.n || 'Unnamed') + ' — ' + money(num(x.v))));
-      out.push('');
-    });
-  }
-  if (F.snaps.length > 1) {
-    out.push('**Net position over time**');
-    F.snaps.forEach(s => out.push('- ' + s.ym + ': ' + money(s.net)));
-    out.push('');
-  }
+  let planned = 0, spent = 0;
+  live.forEach(p => { planned += num(p.budget); spent += projectSpent(p); });
+  pc.append(E('div', { style: 'display:grid;grid-template-columns:repeat(3,1fr);gap:10px' }, [
+    E('div', { cls: 'stat' }, [E('b', { text: money(planned) }), E('span', { text: 'Planned' })]),
+    E('div', { cls: 'stat' }, [E('b', { text: money(spent) }), E('span', { text: 'Committed' })]),
+    E('div', { cls: 'stat' }, [E('b', { style: 'color:' + (spent > planned && planned ? '#B23A3A' : 'var(--acc)'),
+      text: money(planned - spent) }), E('span', { text: 'Left' })])
+  ]));
+  live.forEach(p => {
+    const sp = projectSpent(p), pl = num(p.budget);
+    const over = pl && sp > pl;
+    pc.append(E('button', { style: 'display:block;width:100%;text-align:left;padding:11px 0;border-top:1px solid var(--rule)',
+      onclick: () => go('goals', 'project', p.id) }, [
+      E('div', { style: 'display:flex;justify-content:space-between;gap:10px;align-items:baseline' }, [
+        E('span', { style: 'font-size:14.5px', text: p.title || 'Untitled project' }),
+        E('span', { cls: 'pct', style: over ? 'color:#B23A3A' : '',
+          text: money(sp) + (pl ? ' of ' + money(pl) : '') })
+      ]),
+      E('div', { cls: 'pct', text: [
+        (p.goals || []).length ? 'serves ' + p.goals.map(id => (S.goals.find(g => g.id === id) || {}).title || 'a goal').join(', ') : '',
+        p.done ? 'finished' : dueLabel(p.due)
+      ].filter(Boolean).join(' \u00b7 ') }),
+      pl ? E('div', { cls: 'bar' }, E('i', { style: 'width:' + Math.min(100, Math.round(sp / pl * 100)) + '%' +
+        (over ? ';background:#B23A3A' : '') })) : null
+    ]));
+  });
+  const committed = live.reduce((a, p) => a + projectSpent(p), 0);
+  const monthlyOut = monthlyOf(F0().flows, 'out');
+  if (committed && monthlyOut) pc.append(E('p', { cls: 'lede', style: 'margin-top:10px',
+    text: 'Project costs sit outside the monthly figures above \u2014 they are one-off commitments, not standing expenses.' }));
+  v.append(pc);
 }
+const F0 = () => finance();
 
 
 /* ===================== markdown export ===================== */
@@ -3233,7 +4037,9 @@ function toMarkdown() {
   out.push('\n## Habits\n');
   S.habits.forEach(h => {
     const days = Object.keys(S.hlog).filter(d => S.hlog[d].includes(h.id)).sort();
-    out.push('- **' + (h.name || 'Habit') + '** — ' + days.length + ' days logged, current streak ' + streak(h.id));
+    const owner = h.p ? projectById(h.p) : (h.g ? S.goals.find(x => x.id === h.g) : null);
+    out.push('- **' + (h.name || 'Habit') + '** — ' + days.length + ' days logged, current streak ' + streak(h.id) +
+      (owner ? '. Carries ' + (owner.title || 'a goal') + '.' : ''));
   });
 
   if ((S.projects || []).length) {
@@ -3247,7 +4053,8 @@ function toMarkdown() {
         p2.goals.map(id => (S.goals.find(g => g.id === id) || {}).title || 'a goal').join(', '));
       put('What it is', p2.notes);
       const own = (p2.tasks || []).filter(t => (t.t || '').trim());
-      if (own.length) out.push('**Tasks**\n' + own.map(t => '- [' + (t.d ? 'x' : ' ') + '] ' + t.t).join('\n') + '\n');
+      if (own.length) out.push('**Tasks**\n' + own.map(t => '- [' + (t.d ? 'x' : ' ') + '] ' + t.t +
+        ((t.n || '').trim() ? '\n    ' + t.n.trim().replace(/\n+/g, ' ') : '')).join('\n') + '\n');
     });
   }
 
@@ -3295,7 +4102,15 @@ function toMarkdown() {
 
   if (S.notes.length) {
     out.push('\n## Notes\n');
-    S.notes.forEach(n => { out.push('\n### ' + (n.title || 'Note') + '\n'); out.push((n.body || '').trim() + '\n'); });
+    S.notes.forEach(n => {
+      const ng = n.g && S.goals.find(x => x.id === n.g);
+      const nms = ng && n.ms && (ng.milestones || []).find(x => x.id === n.ms);
+      out.push('\n### ' + (n.title || 'Note') +
+        (ng ? ' \u2014 ' + (nms ? (nms.t || 'milestone') + ', ' : '') + (ng.title || 'a goal') : '') + '\n');
+      out.push((n.body || '').trim() + '\n');
+      if ((n.themes || []).length) out.push('Threads: ' + n.themes.join(', ') + '\n');
+      (n.links || []).forEach(l => out.push('- ' + (l.url ? '[' + (l.label || l.url) + '](' + l.url + ')' : l.label)));
+    });
   }
   return out.join('\n');
 }
@@ -3377,7 +4192,8 @@ function exportYear(Y, out, put, putList) {
           ((D.intent || '').trim() ? '_' + D.intent.trim() + '_' + (anchorText(D.anchor) ? ' [' + anchorText(D.anchor) + ']' : '') + ' — ' : '') +
           (D.note || '').trim().replace(/\n/g, ' ') +
           D.tasks.filter(t => t.t).map(t => '\n    - [' + (t.d ? 'x' : ' ') + '] ' + t.t +
-            (t.g && goalTitle(t.g) ? ' _(' + goalTitle(t.g) + ')_' : '')).join('') +
+            (t.g && goalTitle(t.g) ? ' _(' + goalTitle(t.g) + ')_' : '') +
+            ((t.n || '').trim() ? '\n        ' + t.n.trim().replace(/\n+/g, ' ') : '')).join('') +
           (D.grat || []).filter(g => (g || '').trim()).map(g => '\n    - grateful for: ' + g.trim()).join(''));
       }
     }
@@ -3386,7 +4202,10 @@ function exportYear(Y, out, put, putList) {
     out.push('\n#### Week ' + pad(w) + ' — ' + mon.getDate() + ' ' + MONTHS[mon.getMonth()] + '\n');
     if (W) {
       put('Focus', W.focus); put('How I wanted to feel', W.feel);
-      putList('Weekly goals', W.goals);
+      if ((W.goals || []).length) out.push('**Weekly goals**\n' + W.goals.map(g2 =>
+        '- [' + (g2.d ? 'x' : ' ') + '] ' + (g2.t || '') +
+        (g2.p && projectById(g2.p) ? ' _(' + (projectById(g2.p).title || 'project') + ')_'
+          : g2.g && goalTitle(g2.g) ? ' _(' + goalTitle(g2.g) + ')_' : '')).join('\n') + '\n');
       const wg = [];
       for (let i = 0; i < 7; i++) {
         const dk2 = iso(addDays(mon, i)), DD = S.days[dk2];
@@ -3395,7 +4214,8 @@ function exportYear(Y, out, put, putList) {
       putList('Gratitude gathered', wg);
       putList('Grateful for, the week as a whole', W.grat);
       if (W.todos && W.todos.length) out.push('**To do**\n' + W.todos.map(t => '- [' + (t.d ? 'x' : ' ') + '] ' + t.t +
-        (t.g && goalTitle(t.g) ? ' _(' + goalTitle(t.g) + ')_' : '')).join('\n') + '\n');
+        (t.g && goalTitle(t.g) ? ' _(' + goalTitle(t.g) + ')_' : '') +
+        ((t.n || '').trim() ? '\n    ' + t.n.trim().replace(/\n+/g, ' ') : '')).join('\n') + '\n');
       put('Notes', W.notes); putList('Top three wins', W.wins);
       if (W.rate) put('Week rated', W.rate + '/10');
     }
@@ -3410,9 +4230,36 @@ function exportYear(Y, out, put, putList) {
       M.goals.some(g => g.t) || (M.am || []).some(x => x) || (M.pm || []).some(x => x);
     if (!any) return;
     out.push('\n#### ' + mo + '\n');
-    M.goals.forEach((g, n) => { if (g.t) { put('Goal ' + (n + 1), g.t); putList('Focus', g.focus); put('Notes', g.notes); } });
-    putList('Morning rituals', M.am); putList('Evening rituals', M.pm);
+    M.goals.forEach((g, n) => { if (g.t) {
+      put('Goal ' + (n + 1), g.t + (g.p && projectById(g.p) ? ' (' + (projectById(g.p).title || 'project') + ')'
+        : g.g && goalTitle(g.g) ? ' (' + goalTitle(g.g) + ')' : ''));
+      const fx = (g.focus || []).filter(f => (f.t || '').trim());
+      if (fx.length) out.push('**Focus**\n' + fx.map(f => '- [' + (f.d ? 'x' : ' ') + '] ' + f.t +
+        (f.p && projectById(f.p) ? ' _(' + (projectById(f.p).title || 'project') + ')_'
+          : f.g && goalTitle(f.g) ? ' _(' + goalTitle(f.g) + ')_' : '')).join('\n') + '\n');
+      put('Notes', g.notes); } });
+    [['am', 'Morning rituals'], ['pm', 'Evening rituals']].forEach(([kk, label]) => {
+      const rows = (M[kk] || []).filter(r => (r.t || '').trim());
+      if (!rows.length) return;
+      out.push('**' + label + '**\n' + rows.map(r => {
+        const rate = ritualRate(r.id, Y, i);
+        return '- ' + r.t + (rate.days ? ' \u2014 kept ' + rate.hit + ' of ' + rate.days + ' days (' + rate.pct + '%)' : '');
+      }).join('\n') + '\n');
+    });
     MONTH_REVIEW.forEach(f => f.ty === 'list' ? putList(f.l, (M.review || {})[f.k]) : put(f.l, (M.review || {})[f.k]));
+    const bg = (M.review || {}).byGoal || {};
+    Object.keys(bg).forEach(k => {
+      const isP = k.slice(0, 1) === 'p', id = k.slice(2);
+      const obj = isP ? projectById(id) : S.goals.find(x => x.id === id);
+      if (!obj) return;
+      const pct = isP ? projectProgress(obj) : goalProgress(obj);
+      const was = (M.snap || {})[k];
+      if (!(bg[k].felt || '').trim() && !(bg[k].next || '').trim()) return;
+      out.push('**' + (obj.title || 'Untitled') + '** — ' + pct + '%' +
+        (was === undefined ? '' : ' (was ' + was + '%)'));
+      put('How it went', bg[k].felt);
+      put('Next month', bg[k].next);
+    });
   });
 
   out.push('\n### Mid-year review\n');
@@ -3639,6 +4486,30 @@ function themeCounts() {
     .sort((a, b) => b[1] - a[1]);
 }
 const sameTheme = (a, b) => String(a || '').trim().toLowerCase() === String(b || '').trim().toLowerCase();
+
+/* the vocabulary is shared: studio threads and note tags are one set */
+function allThemeCounts() {
+  const groups = {};
+  const add = (t, kind) => {
+    const k = String(t || '').trim().toLowerCase();
+    if (!k) return;
+    const g = groups[k] = groups[k] || { n: 0, sessions: 0, notes: 0, forms: {} };
+    g.n++; g[kind]++; const f = String(t).trim(); g.forms[f] = (g.forms[f] || 0) + 1;
+  };
+  S.studio.entries.filter(e => !e.draft).forEach(e => (e.themes || []).forEach(t => add(t, 'sessions')));
+  (S.notes || []).forEach(n => (n.themes || []).forEach(t => add(t, 'notes')));
+  journalEntries().forEach(j => (j.obj.themes || []).forEach(t => add(t, 'notes')));
+  return Object.values(groups).map(g => ({
+    label: Object.keys(g.forms).sort((a, b) => g.forms[b] - g.forms[a])[0],
+    n: g.n, sessions: g.sessions, notes: g.notes
+  })).sort((a, b) => b.n - a.n);
+}
+function notesWithTheme(t) {
+  return (S.notes || []).filter(n => (n.themes || []).some(x => sameTheme(x, t)))
+    .map(n => ({ title: n.title || 'Untitled note', body: n.body || '' }))
+    .concat(journalEntries().filter(j => (j.obj.themes || []).some(x => sameTheme(x, t)))
+      .map(j => ({ title: j.label, body: j.body || '' })));
+}
 function entriesWithTheme(t) {
   return S.studio.entries.filter(e => !e.draft && (e.themes || []).some(x => sameTheme(x, t)));
 }
@@ -3976,6 +4847,25 @@ function studioStore() {
 const workOf = id => (S.studio.works || []).find(w => w.id === id);
 const sessionsOfWork = id => S.studio.entries.filter(e => !e.draft && e.work === id);
 const evidenceSessions = () => S.studio.entries.filter(e => !e.draft && e.key);
+const evidenceNotes = () => (S.notes || []).filter(n => n.key);
+const evidenceJournal = () => journalEntries().filter(j => j.obj.key);
+/* one pool, whatever it came from */
+function evidencePool() {
+  return evidenceSessions().map(e => ({
+    id: e.id, kind: 'session', date: e.date, title: e.title || '',
+    label: e.claim || e.title || 'Untitled session',
+    quote: (e.pull || '').trim() || (e.inAction || '').trim() || (e.onAction || '').trim(),
+    forAction: (e.forAction || '').trim(), themes: e.themes || []
+  })).concat(evidenceNotes().map(n => ({
+    id: n.id, kind: 'note', date: n.date || n.up || '', title: n.title || '',
+    label: n.title || 'Untitled note',
+    quote: (n.pull || '').trim() || (n.body || '').trim(), forAction: '', themes: n.themes || []
+  }))).concat(evidenceJournal().map(j => ({
+    id: j.id, kind: 'note', date: j.date, title: j.label, label: j.label,
+    quote: (j.obj.pull || '').trim() || (j.body || '').trim(), forAction: '', themes: j.obj.themes || []
+  }))).sort((a, b) => a.date < b.date ? -1 : 1);
+}
+const evidenceById = id => evidencePool().find(x => x.id === id);
 
 /* claims nest: a finding can be supported by other findings as well as sessions */
 const childClaims = id => S.studio.claims.filter(c => c.parent === id);
@@ -4247,9 +5137,9 @@ function studioFindings() {
       c.append(field('Thread', chips));
     }
 
-    const pool = evidenceSessions();
+    const pool = evidencePool();
     const ev = E('div');
-    if (!pool.length) ev.append(E('div', { cls: 'empty', text: 'No sessions marked as evidence yet. Open a session and tick \u201cCite this\u201d.' }));
+    if (!pool.length) ev.append(E('div', { cls: 'empty', text: 'Nothing cited yet. Tick \u201cCite this\u201d on a studio session or a note.' }));
     pool.forEach(e => {
       const on = cl.evidence.includes(e.id);
       ev.append(E('button', { style: 'display:flex;width:100%;gap:9px;align-items:flex-start;padding:8px 0;border-top:1px solid var(--rule);text-align:left',
@@ -4261,8 +5151,8 @@ function studioFindings() {
         E('span', { cls: 'box' + (on ? ' on' : ''), style: 'flex:none',
           html: '<svg viewBox="0 0 12 12"><polyline points="1.5,6.5 4.5,9.5 10.5,2.5"/></svg>' }),
         E('span', { style: 'flex:1;min-width:0;font-size:14px' }, [
-          E('span', { cls: 'eyebrow', text: e.date + '  ' }), e.claim || e.title || 'Untitled session',
-          (e.pull || '').trim() ? E('div', { cls: 'pct', style: 'margin-top:2px', text: '\u201c' + e.pull.slice(0, 70) + '\u201d' }) : null
+          E('span', { cls: 'eyebrow', text: (e.kind === 'note' ? 'note ' : '') + e.date + '  ' }), e.label,
+          e.quote ? E('div', { cls: 'pct', style: 'margin-top:2px', text: '\u201c' + e.quote.slice(0, 70) + '\u201d' }) : null
         ])
       ]));
     });
@@ -4311,9 +5201,9 @@ function exegesisWords() {
   S.studio.entries.forEach(e => { if (!e.draft) total += words(e.claim); });
   S.studio.claims.forEach(c => {
     total += words(c.text) + words(c.notes);
-    c.evidence.forEach(id => {
-      const e = S.studio.entries.find(x => x.id === id);
-      if (e) total += words(e.pull || e.inAction);
+    (c.evidence || []).forEach(id => {
+      const e = evidenceById(id);
+      if (e) total += words(e.quote);
     });
   });
   Object.values(S.studio.themeNotes).forEach(t => total += words(t));
@@ -4323,8 +5213,7 @@ function exegesisWords() {
 function exegesisMarkdown() {
   studioStore();
   const L = [], p = S.studio.project;
-  const cite = e => e.date + (e.title ? ', ' + e.title : '');
-  const quoteOf = e => (e.pull || '').trim() || (e.inAction || '').trim() || (e.onAction || '').trim();
+  const cite = e => (e.kind === 'note' ? 'notebook, ' : '') + e.date + (e.title ? ', ' + e.title : '');
 
   L.push('# ' + (p.title || 'Untitled project') + ' — exegesis draft\n');
   const b = exegesisWords();
@@ -4344,7 +5233,7 @@ function exegesisMarkdown() {
   else if (S.studio.works.some(w => !(w.statement || '').trim()))
     gaps.push('**Some works have no statement** of what they are doing \u2014 that paragraph opens each section.');
   if (!claimed.length) gaps.push('**No findings recorded.** A finding is a claim in a sentence with sessions cited under it. Without them this is a record, not an argument. Studio \u2192 Findings.');
-  if (!citedSess.length) gaps.push('**No sessions cited.** Open a session and tick \u201cCite this\u201d, then mark the passage worth quoting.');
+  if (!citedSess.length && !evidenceNotes().length) gaps.push('**Nothing cited.** Open a session and tick \u201cCite this\u201d, then mark the passage worth quoting.');
   const orphan = S.studio.entries.filter(e => !e.draft && !e.work).length;
   if (S.studio.works.length && orphan) gaps.push('**' + orphan + ' session' + (orphan === 1 ? ' is' : 's are') +
     ' not attached to a work**, so they cannot appear in any section. Studio \u2192 Works \u2192 Attach sessions.');
@@ -4370,15 +5259,14 @@ function exegesisMarkdown() {
     if (c.theme) L.push('_Thread: ' + c.theme + '._\n');
     if (c.notes) L.push(c.notes.trim() + '\n');
     (c.evidence || []).forEach(id2 => {
-      const e = byId(id2);
-      if (!e) return;
-      const q = quoteOf(e);
-      if (q) L.push('> ' + q.replace(/\n+/g, '\n> ') + '\n>\n> \u2014 ' + cite(e) + '\n');
+      const e = evidenceById(id2);
+      if (!e || !e.quote) return;
+      L.push('> ' + e.quote.replace(/\n+/g, '\n> ') + '\n>\n> \u2014 ' + cite(e) + '\n');
     });
-    const fwd = (c.evidence || []).map(byId).filter(e => e && (e.forAction || '').trim());
+    const fwd = (c.evidence || []).map(evidenceById).filter(e => e && e.forAction);
     if (fwd.length) {
       L.push('**What this asked for next**\n');
-      fwd.forEach(e => L.push('- ' + e.date + ': ' + e.forAction.trim().replace(/\n+/g, ' ')));
+      fwd.forEach(e => L.push('- ' + e.date + ': ' + e.forAction.replace(/\n+/g, ' ')));
       L.push('');
     }
     childClaims(c.id).forEach(k => renderClaim(k, depth + 1));
@@ -4408,17 +5296,36 @@ function exegesisMarkdown() {
     cross.forEach(c => renderClaim(c, 3));
   }
 
-  /* threads */
-  const th = themeCounts();
+  /* threads — studio and notebook together */
+  const th = allThemeCounts();
   if (th.length) {
     L.push('\n## Thematic threads\n');
-    th.forEach(([t, n]) => {
-      const ss = entriesWithTheme(t);
+    th.forEach(t => {
+      const ss = entriesWithTheme(t.label), nn = notesWithTheme(t.label);
       const dates = ss.map(e => e.date).sort();
-      L.push('\n### ' + t + '\n');
-      L.push('_' + n + ' session' + (n === 1 ? '' : 's') +
+      L.push('\n### ' + t.label + '\n');
+      L.push('_' + (ss.length ? ss.length + ' session' + (ss.length === 1 ? '' : 's') : 'no sessions') +
+        (nn.length ? ', ' + nn.length + ' note' + (nn.length === 1 ? '' : 's') : '') +
         (dates.length ? ', ' + dates[0] + ' to ' + dates[dates.length - 1] : '') + '._\n');
-      if ((S.studio.themeNotes[t] || '').trim()) L.push(S.studio.themeNotes[t].trim() + '\n');
+      const review = S.studio.themeNotes[t.label] ||
+        Object.keys(S.studio.themeNotes).find(k => sameTheme(k, t.label)) && S.studio.themeNotes[Object.keys(S.studio.themeNotes).find(k => sameTheme(k, t.label))];
+      if ((review || '').trim()) L.push(review.trim() + '\n');
+      if (nn.length) {
+        L.push('**From the notebook**\n');
+        nn.forEach(n => {
+          const body = (n.body || '').trim().replace(/\n+/g, ' ');
+          L.push('- **' + (n.title || 'Untitled note') + '**' + (body ? ' \u2014 ' + (body.length > 400 ? body.slice(0, 400) + '\u2026' : body) : ''));
+        });
+        L.push('');
+      }
+      if (ss.length) {
+        const claimed = ss.filter(e => (e.claim || '').trim());
+        if (claimed.length) {
+          L.push('**What the sessions showed**\n');
+          claimed.forEach(e => L.push('- ' + e.date + ': ' + e.claim.trim().replace(/\n+/g, ' ')));
+          L.push('');
+        }
+      }
     });
   }
 
@@ -4577,6 +5484,7 @@ function mergeState(remote, local) {
   out.weeks = mergeKeyed(local.weeks, remote.weeks, rn);
   out.months = mergeKeyed(local.months, remote.months, rn);
   out.hlog = mergeKeyed(local.hlog, remote.hlog, rn);
+  out.rlog = mergeKeyed(local.rlog, remote.rlog, rn);
   out.limbs = { days: mergeKeyed((local.limbs || {}).days, (remote.limbs || {}).days, rn) };
 
   out.goals = mergeById(local.goals, remote.goals, rn);
@@ -5143,6 +6051,42 @@ const fmtBytes = b => b == null ? '—' : b < 1024 ? b + 'B'
   : b < 1073741824 ? (b / 1048576).toFixed(1) + 'M' : (b / 1073741824).toFixed(1) + 'G';
 
 
+/* ===================== is there a newer build? ===================== */
+let updateFound = null;
+
+function baseUrl() { return location.href.split('#')[0].split('?')[0]; }
+
+async function fetchBuild() {
+  const res = await fetch(baseUrl() + '?cb=' + Date.now(), { cache: 'no-store' });
+  if (!res.ok) throw new Error(res.status + '');
+  const text = await res.text();
+  const m = text.match(/\/\* BUILD_STAMP \*\/ const BUILD = '([^']+)'/);
+  if (!m) throw new Error('no build stamp on the server');
+  return m[1];
+}
+
+async function checkForUpdate(loud) {
+  try {
+    const remote = await fetchBuild();
+    if (remote === BUILD) { if (loud) toast('Already the latest'); return false; }
+    updateFound = remote;
+    if (loud) applyUpdate();
+    else render();
+    return true;
+  } catch (e) {
+    if (loud) toast('Could not check: ' + e.message);
+    return false;
+  }
+}
+
+function applyUpdate() {
+  /* a fresh query string forces iOS to fetch rather than serve its copy.
+     Same origin, so nothing stored is affected. */
+  save(true);
+  location.replace(baseUrl() + '?v=' + (updateFound || Date.now()));
+}
+
+
 /* ===================== boot ===================== */
 window.addEventListener('beforeunload', () => save(true));
 document.addEventListener('visibilitychange', () => {
@@ -5155,6 +6099,8 @@ if (navigator.storage && navigator.storage.persist) {
 }
 render();
 migrateMedia();
+/* quietly ask the server whether this copy is current */
+setTimeout(() => checkForUpdate(false), 1500);
 if (S.cfg.auto && S.cfg.token && S.cfg.gist) {
   cloudPull('merge').then(ok => { if (ok) render(); });
 }
