@@ -182,7 +182,7 @@ textarea::placeholder,input::placeholder{color:var(--faint)}
 <script>
 /* ===================== core ===================== */
 const KEY = 'goaldigger2026';
-/* BUILD_STAMP */ const BUILD = '2026-08-30.2140';
+/* BUILD_STAMP */ const BUILD = '2026-08-30.2251';
 const YEAR = 2026;                       /* the year this planner began */
 const CURRENT_YEAR = new Date().getFullYear();
 const MONTHS = ['January','February','March','April','May','June','July','August','September','October','November','December'];
@@ -1277,7 +1277,23 @@ function moveControl(arr, i, fromIso, redraw) {
 
 
 /* ===================== a note on a single task ===================== */
-let notingItem = null;
+let notingItem = null, openNote = null;
+
+/* a note reads as a line until you tap it */
+function notePreview(n, onOpen) {
+  const body = (n.body || '').trim().replace(/\s+/g, ' ');
+  const wrap = E('button', { style: 'display:block;width:100%;text-align:left;padding:2px 0', onclick: onOpen });
+  wrap.append(E('div', { style: 'font-size:14.5px;display:-webkit-box;-webkit-line-clamp:2;-webkit-box-orient:vertical;overflow:hidden',
+    text: body || 'Empty note' }));
+  const bits = [];
+  if ((n.themes || []).length) bits.push(n.themes.join(' \u00b7 '));
+  if (n.key) bits.push('cited');
+  if ((n.links || []).length) bits.push(n.links.length + ' link' + (n.links.length === 1 ? '' : 's'));
+  const words = body ? body.split(' ').length : 0;
+  if (words > 30) bits.push(words + ' words');
+  if (bits.length) wrap.append(E('div', { cls: 'pct', style: 'margin-top:3px', text: bits.join('  \u00b7  ') }));
+  return wrap;
+}
 
 function noteControl(it, redraw) {
   const wrap = E('div', { style: 'padding:0 0 6px 29px' });
@@ -1743,21 +1759,28 @@ function viewToday() {
   if (!D.notes.length) nc2.append(E('div', { cls: 'empty', text: 'What happened, what you noticed, what you made.' }));
   D.notes.forEach((n, i) => {
     n.links = n.links || [];
-    const blk = E('div', { style: i ? 'padding-top:14px;margin-top:14px;border-top:1px solid var(--rule)' : '' });
-    blk.append(E('div', { style: 'display:flex;gap:8px;align-items:flex-start' }, [
-      E('div', { style: 'flex:1;min-width:0' }, areaWithLinks(n, 'body',
-        i ? 'And\u2026' : 'What happened, what you noticed, what you made. Paste links freely.', 1, n.links)),
-      E('button', { cls: 'x', text: '\u00d7', 'aria-label': 'Remove note',
-        onclick: () => { if ((n.body || '').trim() && !confirm('Delete this note?')) return;
-          D.notes.splice(i, 1); save(true); render(); } })
-    ]));
-    if ((n.body || '').trim() || (n.themes || []).length) blk.append(tagRow(n, render, { cite: true }));
+    const isOpen = openNote === n.id || !(n.body || '').trim();
+    const blk = E('div', { style: i ? 'padding-top:12px;margin-top:12px;border-top:1px solid var(--rule)' : '' });
+    if (!isOpen) {
+      blk.append(notePreview(n, () => { openNote = n.id; render(); }));
+    } else {
+      blk.append(E('div', { style: 'display:flex;gap:8px;align-items:flex-start' }, [
+        E('div', { style: 'flex:1;min-width:0' }, areaWithLinks(n, 'body',
+          i ? 'And\u2026' : 'What happened, what you noticed, what you made. Paste links freely.', 1, n.links)),
+        E('button', { cls: 'x', text: '\u00d7', 'aria-label': 'Remove note',
+          onclick: () => { if ((n.body || '').trim() && !confirm('Delete this note?')) return;
+            D.notes.splice(i, 1); save(true); render(); } })
+      ]));
+      if ((n.body || '').trim() || (n.themes || []).length) blk.append(tagRow(n, render, { cite: true }));
+      if ((n.body || '').trim()) blk.append(E('button', { cls: 'btn ghost', style: 'padding-left:0;font-size:11px',
+        text: 'Collapse', onclick: () => { openNote = null; render(); } }));
+    }
     nc2.append(blk);
   });
   nc2.append(E('button', { cls: 'btn' + (D.notes.length ? '' : ' fill'), style: 'margin-top:12px',
     text: D.notes.length ? '+ Another note' : '+ Write a note',
-    onclick: () => { D.notes.push({ id: uid(), body: '', themes: [], links: [], key: false, pull: '' });
-      save(true); render(); } }));
+    onclick: () => { const n = { id: uid(), body: '', themes: [], links: [], key: false, pull: '' };
+      D.notes.push(n); openNote = n.id; save(true); render(); } }));
   v.append(nc2);
 
   /* carried over */
@@ -3361,9 +3384,15 @@ function pageNotes() {
           E('span', { cls: 'eyebrow', style: 'color:var(--acc)', text: j.label }),
           E('span', { cls: 'pct', text: j.kind + ' \u203a' })
         ]));
-        if ((j.body || '').trim()) blk.append(E('p', { style: 'margin:6px 0 0;font-size:14.5px' },
-          linkified(j.body.trim().length > 300 ? j.body.trim().slice(0, 300) + '\u2026' : j.body.trim())));
-        blk.append(tagRow(j.obj, render, { cite: true }));
+        const jOpen = openNote === j.id;
+        if ((j.body || '').trim()) blk.append(E('button', {
+          style: 'display:block;width:100%;text-align:left;margin:6px 0 0',
+          onclick: () => { openNote = jOpen ? null : j.id; render(); } },
+          E('div', { style: 'font-size:14.5px' + (jOpen ? '' : ';display:-webkit-box;-webkit-line-clamp:2;-webkit-box-orient:vertical;overflow:hidden') },
+            linkified(j.body.trim()))));
+        if (jOpen) blk.append(tagRow(j.obj, render, { cite: true }));
+        else if ((j.obj.themes || []).length || j.obj.key) blk.append(E('div', { cls: 'pct', style: 'margin-top:3px',
+          text: [(j.obj.themes || []).join(' \u00b7 '), j.obj.key ? 'cited' : ''].filter(Boolean).join('  \u00b7  ') }));
         jc.append(blk);
       });
       if (jn.length > 40) jc.append(E('div', { cls: 'pct', style: 'margin-top:10px', text: 'showing the most recent 40' }));
@@ -3385,16 +3414,23 @@ function pageNotes() {
       E('button', { cls: 'x', text: '×', onclick: () => { if (confirm('Delete this note?')) { S.notes.splice(i, 1); save(true); render(); } } })
     ]));
     n.links = n.links || [];
-    c.append(areaWithLinks(n, 'body', 'Write…', 1, n.links));
-    c.append(tagRow(n, render, { cite: true }));
+    if (openNote === n.id || !(n.body || '').trim()) {
+      c.append(areaWithLinks(n, 'body', 'Write\u2026', 1, n.links));
+      c.append(tagRow(n, render, { cite: true }));
+      if ((n.body || '').trim()) c.append(E('button', { cls: 'btn ghost', style: 'padding-left:0;font-size:11px',
+        text: 'Collapse', onclick: () => { openNote = null; render(); } }));
+    } else {
+      c.append(notePreview(n, () => { openNote = n.id; render(); }));
+    }
     c.append(E('div', { cls: 'rule' }));
     c.append(linkList(n.links, render, { empty: 'No links on this note.' }));
     v.append(c);
   });
   if (!S.notes.length) v.append(E('p', { cls: 'lede', text: 'Loose pages for anything that does not belong to a week.' }));
   v.append(E('button', { cls: 'btn fill', text: '+ New note',
-    onclick: () => { S.notes.unshift({ id: uid(), title: '', body: '', themes: [], links: [],
-      key: false, pull: '', date: iso(new Date()), up: iso(new Date()) }); save(); render(); } }));
+    onclick: () => { const n = { id: uid(), title: '', body: '', themes: [], links: [],
+      key: false, pull: '', date: iso(new Date()), up: iso(new Date()) };
+      S.notes.unshift(n); openNote = n.id; save(); render(); } }));
   return v;
 }
 
