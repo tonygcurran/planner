@@ -182,7 +182,7 @@ textarea::placeholder,input::placeholder{color:var(--faint)}
 <script>
 /* ===================== core ===================== */
 const KEY = 'goaldigger2026';
-/* BUILD_STAMP */ const BUILD = '2026-08-26.2054';
+/* BUILD_STAMP */ const BUILD = '2026-08-30.2118';
 const YEAR = 2026;                       /* the year this planner began */
 const CURRENT_YEAR = new Date().getFullYear();
 const MONTHS = ['January','February','March','April','May','June','July','August','September','October','November','December'];
@@ -225,6 +225,16 @@ function migrate(st) {
   st.years = st.years || {};
   st.projects = st.projects || [];
   st.rlog = st.rlog || {};
+  /* one note per day became several */
+  Object.values(st.days || {}).forEach(d => {
+    if (Array.isArray(d.notes)) return;
+    d.notes = [];
+    if ((d.note || '').trim() || (d.themes || []).length) {
+      d.notes.push({ id: uid(), body: d.note || '', themes: d.themes || [],
+        key: !!d.key, pull: d.pull || '', links: d.links || [] });
+    }
+    delete d.note; delete d.themes; delete d.key; delete d.pull;
+  });
   /* weekly goals were three plain lines; they are items now, like tasks */
   Object.values(st.weeks || {}).forEach(w => {
     w.goals = (w.goals || []).map(g => typeof g === 'string' ? { t: g, d: false } : g)
@@ -1377,10 +1387,12 @@ function journalEntries() {
   const out = [];
   Object.keys(S.days).forEach(dk => {
     const d = S.days[dk];
-    if (!(d.note || '').trim() && !(d.themes || []).length) return;
-    out.push({ id: 'day:' + dk, kind: 'day', date: dk, obj: d, body: d.note || '',
-      label: DOW[(parseIso(dk).getDay() + 6) % 7] + ' ' + dk,
-      open: () => { R.day = dk; go('today'); } });
+    (d.notes || []).forEach((n, i) => {
+      if (!(n.body || '').trim() && !(n.themes || []).length) return;
+      out.push({ id: 'day:' + dk + ':' + n.id, kind: 'day', date: dk, obj: n, body: n.body || '',
+        label: DOW[(parseIso(dk).getDay() + 6) % 7] + ' ' + dk + ((d.notes.length > 1) ? ' \u00b7 ' + (i + 1) : ''),
+        open: () => { R.day = dk; go('today'); } });
+    });
   });
   Object.keys(S.weeks).forEach(wk => {
     const w = S.weeks[wk];
@@ -1523,8 +1535,13 @@ function week(y, w) {
   return S.weeks[k] = S.weeks[k] || { focus: '', feel: '', grat: [], goals: [], todos: [], notes: '', wins: [], rate: null };
 }
 function day(d) {
-  const r = S.days[d] = S.days[d] || { intent: '', anchor: null, note: '', tasks: [], grat: [] };
+  const r = S.days[d] = S.days[d] || { intent: '', anchor: null, notes: [], tasks: [], grat: [] };
   if (!r.grat) r.grat = [];
+  if (!Array.isArray(r.notes)) {
+    r.notes = (r.note || '').trim() ? [{ id: uid(), body: r.note, themes: r.themes || [],
+      key: !!r.key, pull: r.pull || '', links: r.links || [] }] : [];
+    delete r.note;
+  }
   if (r.intent === undefined) r.intent = '';
   return r;
 }
@@ -1717,10 +1734,31 @@ function viewToday() {
   tc.append(E('div', { cls: 'btnrow' }, remBtn('Send to Reminders',
     () => D.tasks.filter(t => !t.d).map(t => ({ title: t.t, due: k })))));
   tc.append(E('div', { cls: 'rule' }));
-  tc.append(field(isNow ? 'Notes on today' : 'Notes', areaWithLinks(D, 'note',
-    'What happened, what you noticed, what you made. Paste links freely.', 1, S.links)));
-  if ((D.note || '').trim() || (D.themes || []).length) tc.append(tagRow(D, render, { cite: true }));
   v.append(tc);
+
+  /* notes — as many as the day needs */
+  const nc2 = E('div', { cls: 'card' });
+  nc2.append(E('div', { cls: 'head' }, [E('h2', { text: isNow ? 'Notes on today' : 'Notes' }),
+    D.notes.length > 1 ? E('span', { cls: 'pct', text: D.notes.length }) : null]));
+  if (!D.notes.length) nc2.append(E('div', { cls: 'empty', text: 'What happened, what you noticed, what you made.' }));
+  D.notes.forEach((n, i) => {
+    n.links = n.links || [];
+    const blk = E('div', { style: i ? 'padding-top:14px;margin-top:14px;border-top:1px solid var(--rule)' : '' });
+    blk.append(E('div', { style: 'display:flex;gap:8px;align-items:flex-start' }, [
+      E('div', { style: 'flex:1;min-width:0' }, areaWithLinks(n, 'body',
+        i ? 'And\u2026' : 'What happened, what you noticed, what you made. Paste links freely.', 1, n.links)),
+      E('button', { cls: 'x', text: '\u00d7', 'aria-label': 'Remove note',
+        onclick: () => { if ((n.body || '').trim() && !confirm('Delete this note?')) return;
+          D.notes.splice(i, 1); save(true); render(); } })
+    ]));
+    if ((n.body || '').trim() || (n.themes || []).length) blk.append(tagRow(n, render, { cite: true }));
+    nc2.append(blk);
+  });
+  nc2.append(E('button', { cls: 'btn' + (D.notes.length ? '' : ' fill'), style: 'margin-top:12px',
+    text: D.notes.length ? '+ Another note' : '+ Write a note',
+    onclick: () => { D.notes.push({ id: uid(), body: '', themes: [], links: [], key: false, pull: '' });
+      save(true); render(); } }));
+  v.append(nc2);
 
   /* carried over */
   const carried = openTasks(iso(addDays(d, -14)), iso(addDays(d, -1)));
@@ -1981,7 +2019,12 @@ function viewWeek() {
         ai2 ? E('span', { style: `font-family:var(--disp);font-size:10px;letter-spacing:.1em;text-transform:uppercase;color:${ai2.hex};margin-left:7px`, text: ai2.label }) : null
       ]));
     }
-    body.append(bindArea(D, 'note', isToday ? 'Today…' : ''));
+    if ((D.notes || []).length) {
+      D.notes.forEach(n => { if ((n.body || '').trim())
+        body.append(E('div', { style: 'font-size:14px;padding:2px 0' }, linkified(n.body))); });
+    } else if (isToday) {
+      body.append(E('div', { cls: 'pct', text: 'Nothing written yet' }));
+    }
     D.tasks.forEach((t, ti) => {
       body.append(E('div', { style: 'display:flex;gap:8px;align-items:flex-start;padding:3px 0' }, [
         E('button', { cls: 'box' + (t.d ? ' on' : ''),
@@ -2135,7 +2178,7 @@ function viewMonth() {
   for (let dn = 1; dn <= dim; dn++) {
     const dt = new Date(Y, m, dn), dk = iso(dt);
     const hits = (S.hlog[dk] || []).length;
-    const hasNote = (S.days[dk] && (S.days[dk].note || S.days[dk].tasks.length));
+    const hasNote = (S.days[dk] && ((S.days[dk].notes || []).some(n => (n.body || '').trim()) || S.days[dk].tasks.length));
     const isToday = sameDay(dt, new Date());
     grid.append(E('button', {
       style: `aspect-ratio:1;border:1px solid ${isToday ? 'var(--acc)' : 'var(--rule)'};border-radius:2px;background:${hits ? `hsl(var(--hue),62%,${96 - Math.min(hits, 5) * 8}%)` : '#fff'};display:flex;flex-direction:column;align-items:center;justify-content:center;gap:2px`,
@@ -3013,7 +3056,7 @@ function viewMore() {
   const done = S.goals.filter(g => g.completed).length;
   const rated = Object.entries(S.weeks).filter(([k, w]) => w.rate && k.slice(0, 4) === String(R.year)).map(([, w]) => w);
   const avg = rated.length ? (rated.reduce((a, w) => a + w.rate, 0) / rated.length).toFixed(1) : '–';
-  const written = Object.entries(S.days).filter(([k, d]) => (d.note || '').trim() && k.slice(0, 4) === String(R.year)).length;
+  const written = Object.entries(S.days).filter(([k, d]) => (d.notes || []).some(n => (n.body || '').trim()) && k.slice(0, 4) === String(R.year)).length;
   const sc = E('div', { cls: 'card' });
   sc.append(E('h2', { text: R.year + ' so far' }));
   sc.append(E('div', { style: 'display:grid;grid-template-columns:repeat(4,1fr);gap:10px' }, [
@@ -4187,10 +4230,11 @@ function exportYear(Y, out, put, putList) {
     const days = [];
     for (let i = 0; i < 7; i++) {
       const dk = iso(addDays(mon, i)), D = S.days[dk];
-      if (D && ((D.note || '').trim() || (D.intent || '').trim() || D.anchor || D.tasks.length || (D.grat || []).some(g => (g || '').trim()))) {
+      if (D && ((D.notes || []).some(n => (n.body || '').trim()) || (D.intent || '').trim() || D.anchor || D.tasks.length || (D.grat || []).some(g => (g || '').trim()))) {
         days.push('- **' + DOW[i] + ' ' + dk + '** ' +
           ((D.intent || '').trim() ? '_' + D.intent.trim() + '_' + (anchorText(D.anchor) ? ' [' + anchorText(D.anchor) + ']' : '') + ' — ' : '') +
-          (D.note || '').trim().replace(/\n/g, ' ') +
+          (D.notes || []).filter(n => (n.body || '').trim())
+            .map(n => n.body.trim().replace(/\n/g, ' ')).join('  //  ') +
           D.tasks.filter(t => t.t).map(t => '\n    - [' + (t.d ? 'x' : ' ') + '] ' + t.t +
             (t.g && goalTitle(t.g) ? ' _(' + goalTitle(t.g) + ')_' : '') +
             ((t.n || '').trim() ? '\n        ' + t.n.trim().replace(/\n+/g, ' ') : '')).join('') +
@@ -6104,7 +6148,6 @@ setTimeout(() => checkForUpdate(false), 1500);
 if (S.cfg.auto && S.cfg.token && S.cfg.gist) {
   cloudPull('merge').then(ok => { if (ok) render(); });
 }
-
 </script>
 </body>
 </html>
