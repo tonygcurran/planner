@@ -182,7 +182,7 @@ textarea::placeholder,input::placeholder{color:var(--faint)}
 <script>
 /* ===================== core ===================== */
 const KEY = 'goaldigger2026';
-/* BUILD_STAMP */ const BUILD = '2026-08-30.2118';
+/* BUILD_STAMP */ const BUILD = '2026-08-30.2140';
 const YEAR = 2026;                       /* the year this planner began */
 const CURRENT_YEAR = new Date().getFullYear();
 const MONTHS = ['January','February','March','April','May','June','July','August','September','October','November','December'];
@@ -3278,7 +3278,7 @@ function pageLists() {
 }
 
 /* ---------- notes ---------- */
-let noteFilter = null, noteScope = 'all';
+let noteFilter = null, noteScope = 'all', threadEdit = false, renaming = null;
 
 function pageNotes() {
   const v = E('div');
@@ -3293,7 +3293,46 @@ function pageNotes() {
       onclick: () => { noteFilter = sameTheme(noteFilter, t.label) ? null : t.label; render(); }
     }, [t.label, E('span', { style: 'opacity:.55;font-size:12px',
       text: t.notes + (t.sessions ? '\u00b7' + t.sessions : '') })])));
+    chips.append(E('button', { cls: 'chip', style: 'font-size:11.5px;padding:4px 9px;border-style:dashed;color:var(--mut)',
+      text: threadEdit ? 'done' : 'manage', onclick: () => { threadEdit = !threadEdit; renaming = null; render(); } }));
     v.append(chips);
+
+    if (threadEdit) {
+      const mc2 = E('div', { cls: 'card on' });
+      mc2.append(E('h2', { text: 'Threads' }));
+      mc2.append(E('p', { cls: 'lede', text: 'A thread exists wherever something carries it. Renaming changes it everywhere at once; deleting removes it from every note, session and diary entry \u2014 the writing itself is untouched.' }));
+      vocab.forEach(t => {
+        const row = E('div', { style: 'padding:11px 0;border-top:1px solid var(--rule)' });
+        if (renaming === t.label) {
+          const inp = E('input', { type: 'text', style: 'font-size:15px' });
+          inp.value = t.label;
+          row.append(inp);
+          row.append(E('div', { cls: 'btnrow' }, [
+            E('button', { cls: 'btn fill', text: 'Rename everywhere', onclick: () => {
+              const n = renameTheme(t.label, inp.value);
+              renaming = null; toast(n + ' updated'); render();
+            }}),
+            E('button', { cls: 'btn ghost', text: 'Cancel', onclick: () => { renaming = null; render(); } })
+          ]));
+        } else {
+          row.append(E('div', { style: 'display:flex;gap:9px;align-items:center' }, [
+            E('span', { style: 'flex:1;min-width:0;font-size:14.5px', text: t.label }),
+            E('span', { cls: 'pct', text: [t.notes ? t.notes + ' note' + (t.notes === 1 ? '' : 's') : '',
+              t.sessions ? t.sessions + ' session' + (t.sessions === 1 ? '' : 's') : ''].filter(Boolean).join(' \u00b7 ') }),
+            E('button', { cls: 'tag', text: 'rename', onclick: () => { renaming = t.label; render(); } }),
+            E('button', { cls: 'x', text: '\u00d7', 'aria-label': 'Delete thread', onclick: () => {
+              if (!confirm('Remove \u201c' + t.label + '\u201d from all ' + t.n + ' item' + (t.n === 1 ? '' : 's') + '? The writing stays; only the tag goes.')) return;
+              const n = deleteTheme(t.label);
+              if (sameTheme(noteFilter, t.label)) noteFilter = null;
+              toast('Removed from ' + n); render();
+            }})
+          ]));
+        }
+        mc2.append(row);
+      });
+      v.append(mc2);
+    }
+
     if (noteFilter) {
       const inStudio = S.studio.entries.filter(e => !e.draft && (e.themes || []).some(x => sameTheme(x, noteFilter))).length;
       v.append(E('p', { cls: 'lede', text: inStudio
@@ -4548,6 +4587,43 @@ function allThemeCounts() {
     n: g.n, sessions: g.sessions, notes: g.notes
   })).sort((a, b) => b.n - a.n);
 }
+/* everything that carries a thread, so it can be renamed or removed everywhere */
+function themeCarriers(t) {
+  const out = [];
+  S.studio.entries.forEach(e => { if ((e.themes || []).some(x => sameTheme(x, t))) out.push(e); });
+  (S.notes || []).forEach(n => { if ((n.themes || []).some(x => sameTheme(x, t))) out.push(n); });
+  journalEntries().forEach(j => { if ((j.obj.themes || []).some(x => sameTheme(x, t))) out.push(j.obj); });
+  return out;
+}
+function renameTheme(from, to) {
+  to = String(to || '').trim();
+  if (!to) return 0;
+  let n = 0;
+  themeCarriers(from).forEach(o => {
+    o.themes = o.themes.map(x => sameTheme(x, from) ? to : x)
+      .filter((x, i, a) => a.findIndex(y => sameTheme(y, x)) === i);
+    n++;
+  });
+  (S.studio.claims || []).forEach(c => { if (sameTheme(c.theme, from)) c.theme = to; });
+  const notes = S.studio.themeNotes || {};
+  Object.keys(notes).forEach(k => {
+    if (!sameTheme(k, from)) return;
+    const text = notes[k];
+    delete notes[k];
+    notes[to] = [notes[to], text].filter(Boolean).join('\n\n');
+  });
+  save(true);
+  return n;
+}
+function deleteTheme(t) {
+  let n = 0;
+  themeCarriers(t).forEach(o => { o.themes = o.themes.filter(x => !sameTheme(x, t)); n++; });
+  (S.studio.claims || []).forEach(c => { if (sameTheme(c.theme, t)) c.theme = ''; });
+  Object.keys(S.studio.themeNotes || {}).forEach(k => { if (sameTheme(k, t)) delete S.studio.themeNotes[k]; });
+  save(true);
+  return n;
+}
+
 function notesWithTheme(t) {
   return (S.notes || []).filter(n => (n.themes || []).some(x => sameTheme(x, t)))
     .map(n => ({ title: n.title || 'Untitled note', body: n.body || '' }))
