@@ -182,7 +182,7 @@ textarea::placeholder,input::placeholder{color:var(--faint)}
 <script>
 /* ===================== core ===================== */
 const KEY = 'goaldigger2026';
-/* BUILD_STAMP */ const BUILD = '2026-08-30.2251';
+/* BUILD_STAMP */ const BUILD = '2026-09-03.2231';
 const YEAR = 2026;                       /* the year this planner began */
 const CURRENT_YEAR = new Date().getFullYear();
 const MONTHS = ['January','February','March','April','May','June','July','August','September','October','November','December'];
@@ -1223,8 +1223,11 @@ function moveDayTaskToWeek(arr, i, y, w) {
   save(true);
 }
 
-function moveControl(arr, i, fromIso, redraw) {
+function moveControl(arr, i, ctx, redraw) {
   const item = arr[i];
+  if (typeof ctx === 'string') ctx = { kind: 'day', iso: ctx };
+  const anchor = ctx.iso ? parseIso(ctx.iso)
+    : ctx.kind === 'week' ? mondayOf(ctx.y, ctx.w) : new Date();
   const wrap = E('div', { style: 'padding:0 0 6px 29px' });
   wrap.append(E('button', {
     cls: 'tag', style: 'border-style:dashed;color:var(--faint)', text: '\u2192 push',
@@ -1232,28 +1235,55 @@ function moveControl(arr, i, fromIso, redraw) {
   }));
   if (movingItem !== item) return wrap;
 
-  const from = parseIso(fromIso);
-  const thisWk = isoWeek(from), nextWk = isoWeek(addDays(mondayOf(thisWk.y, thisWk.w), 7));
+  const thisWk = isoWeek(anchor), nextWk = isoWeek(addDays(mondayOf(thisWk.y, thisWk.w), 7));
   const panel = E('div', { style: 'margin-top:8px;border-left:2px solid var(--acc);padding-left:10px' });
-
-  const done = () => { movingItem = null; redraw(); };
+  const take = () => {
+    const [it] = arr.splice(i, 1);
+    if (!it) return it;
+    /* leaving a plan to be scheduled: keep the thread back to it */
+    if (ctx.kind === 'project' && ctx.id) {
+      const pr = projectById(ctx.id);
+      it.p = ctx.id;
+      if (!it.g && pr && (pr.goals || [])[0]) it.g = pr.goals[0];
+    }
+    if (ctx.kind === 'goal' && ctx.id) {
+      const g2 = S.goals.find(x => x.id === ctx.id);
+      it.g = ctx.id;
+      if (g2) { if (!it.id) it.id = uid(); it.ga = it.id; (g2.actions || []).push({ t: it.t, d: false, id: it.id }); }
+    }
+    return it;
+  };
+  const done = () => { movingItem = null; save(true); redraw(); };
+  const toDay = dk => { const it = take(); if (it) day(dk).tasks.push(it); done(); };
+  const toWeek = (y, w) => { const it = take(); if (it) week(y, w).todos.push(it); done(); };
+  const toProject = pid => {
+    const it = take(); if (!it) return done();
+    const pr = projectById(pid);
+    if (pr) { delete it.p; pr.tasks.push(it); }
+    done();
+  };
 
   panel.append(E('h3', { style: 'margin:4px 0 6px', text: 'Push to' }));
-  panel.append(E('div', { cls: 'chips' }, [
-    E('button', { cls: 'chip', text: 'Tomorrow',
-      onclick: () => { moveDayTask(arr, i, iso(addDays(from, 1))); done(); } }),
-    E('button', { cls: 'chip', text: "This week's list",
-      onclick: () => { moveDayTaskToWeek(arr, i, thisWk.y, thisWk.w); done(); } }),
-    E('button', { cls: 'chip', text: "Next week's list",
-      onclick: () => { moveDayTaskToWeek(arr, i, nextWk.y, nextWk.w); done(); } })
-  ]));
+  const quick = E('div', { cls: 'chips' });
+  if (ctx.kind === 'day') quick.append(E('button', { cls: 'chip', text: 'Tomorrow',
+    onclick: () => toDay(iso(addDays(anchor, 1))) }));
+  else quick.append(E('button', { cls: 'chip', text: 'Today', onclick: () => toDay(iso(new Date())) }));
+  if (!(ctx.kind === 'week' && ctx.y === thisWk.y && ctx.w === thisWk.w))
+    quick.append(E('button', { cls: 'chip', text: "This week's list", onclick: () => toWeek(thisWk.y, thisWk.w) }));
+  quick.append(E('button', { cls: 'chip', text: "Next week's list", onclick: () => toWeek(nextWk.y, nextWk.w) }));
+  if (item.p && ctx.kind !== 'project') {
+    const pr = projectById(item.p);
+    if (pr) quick.append(E('button', { cls: 'chip', text: 'Back to ' + (pr.title || 'the project'),
+      onclick: () => toProject(item.p) }));
+  }
+  panel.append(quick);
 
-  [[thisWk, 'This week'], [nextWk, 'Next week']].forEach(([wkk, label]) => {
+  [[thisWk, ctx.kind === 'day' ? 'This week' : 'That week'], [nextWk, 'The week after']].forEach(([wkk, label], n) => {
     const mon = mondayOf(wkk.y, wkk.w);
-    panel.append(E('h3', { style: 'margin:14px 0 5px', text: label }));
+    panel.append(E('h3', { style: 'margin:14px 0 5px', text: n === 0 && ctx.kind !== 'day' ? 'That week' : label }));
     const grid = E('div', { style: 'display:grid;grid-template-columns:repeat(7,1fr);gap:3px' });
     for (let d2 = 0; d2 < 7; d2++) {
-      const dt = addDays(mon, d2), dk = iso(dt), here = dk === fromIso;
+      const dt = addDays(mon, d2), dk = iso(dt), here = ctx.kind === 'day' && dk === ctx.iso;
       const past = dt < new Date(new Date().toDateString());
       grid.append(E('button', {
         style: 'padding:7px 0;border:1px solid ' + (here ? 'var(--acc)' : 'var(--rule)') +
@@ -1261,7 +1291,7 @@ function moveControl(arr, i, fromIso, redraw) {
                ';display:flex;flex-direction:column;align-items:center;gap:1px' +
                (past && !here ? ';opacity:.45' : ''),
         'aria-label': dk,
-        onclick: () => { if (here) { done(); return; } moveDayTask(arr, i, dk); done(); }
+        onclick: () => { if (here) { done(); return; } toDay(dk); }
       }, [
         E('span', { cls: 'eyebrow', style: 'font-size:9px', text: DOW[d2][0] }),
         E('span', { cls: 'mono', style: 'font-size:13px' + (here ? ';color:var(--acc);font-weight:700' : ''),
@@ -1270,11 +1300,11 @@ function moveControl(arr, i, fromIso, redraw) {
     }
     panel.append(grid);
   });
-  panel.append(E('button', { cls: 'btn ghost', style: 'margin-top:10px', text: 'Cancel', onclick: done }));
+  panel.append(E('button', { cls: 'btn ghost', style: 'margin-top:10px', text: 'Cancel',
+    onclick: () => { movingItem = null; redraw(); } }));
   wrap.append(panel);
   return wrap;
 }
-
 
 /* ===================== a note on a single task ===================== */
 let notingItem = null, openNote = null;
@@ -1937,7 +1967,8 @@ function viewWeek() {
   W.grat = W.grat || []; W.goals = W.goals || [];
   c2.append(E('h2', { text: 'Weekly goals' }));
   c2.append(E('p', { cls: 'lede', text: 'Three at most. Link each one to the goal or project it moves, and it counts as work toward it.' }));
-  c2.append(checkList(W.goals, 'Nothing set for this week.', render, { link: true, note: false }));
+  c2.append(checkList(W.goals, 'Nothing set for this week.', render,
+    { link: true, note: false, move: { kind: 'week', y, w } }));
   if (W.goals.length < 3) {
     const cands = [].concat(
       openProjects().map(p2 => ({ label: p2.title || 'Untitled project', sub: dueLabel(p2.due), p: p2.id, g: (p2.goals || [])[0] })),
@@ -2066,7 +2097,8 @@ function viewWeek() {
 
   const c3 = E('div', { cls: 'card' });
   c3.append(E('h2', { text: 'Things to do' }));
-  c3.append(checkList(W.todos, 'Nothing listed for this week yet.', render, { link: true }));
+  c3.append(checkList(W.todos, 'Nothing listed for this week yet.', render,
+    { link: true, move: { kind: 'week', y, w } }));
 
   /* what is still open in the days of this week */
   const wkKey = weekKey(y, w);
@@ -2246,7 +2278,8 @@ function viewMonth() {
     if (owner) blk.append(E('div', { cls: 'bar' }, E('i', { style: 'width:' +
       (g.p ? projectProgress(owner) : goalProgress(owner)) + '%' })));
     g.focus = g.focus || [];
-    blk.append(field('Focus', checkList(g.focus, 'What are the three moves?', render, { link: true, note: false })));
+    blk.append(field('Focus', checkList(g.focus, 'What are the three moves?', render,
+      { link: true, note: false, move: { kind: 'month', y: Y, m } })));
     blk.append(field('Notes', bindArea(g, 'notes')));
     gc.append(blk);
   });
@@ -2652,7 +2685,7 @@ function viewGoal(id) {
   const ac = E('div', { cls: 'card' });
   ac.append(E('h2', { text: long ? 'Next steps' : 'Action list' }));
   ac.append(E('p', { cls: 'lede', text: long ? 'The essential next steps before this moves forward.' : 'Start with the first three actions — the ones you could do this week.' }));
-  ac.append(checkList(g.actions, 'No actions yet.', render));
+  ac.append(checkList(g.actions, 'No actions yet.', render, { move: { kind: 'goal', id: g.id } }));
   ac.append(E('div', { cls: 'btnrow' }, remBtn('Send to Reminders',
     () => g.actions.filter(a => !a.d).map(a => ({ title: a.t, due: g.due })))));
   v.append(ac);
@@ -2950,7 +2983,7 @@ function viewProject(id) {
   const tc = E('div', { cls: 'card' });
   tc.append(E('h2', { text: 'Tasks' }));
   tc.append(E('p', { cls: 'lede', text: 'The plan. Pull these into a day or a week when you are ready to do them.' }));
-  tc.append(checkList(p.tasks, 'Nothing planned yet.', render));
+  tc.append(checkList(p.tasks, 'Nothing planned yet.', render, { move: { kind: 'project', id: p.id } }));
   v.append(tc);
 
   const bud = E('div', { cls: 'card' });
