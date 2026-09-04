@@ -182,7 +182,7 @@ textarea::placeholder,input::placeholder{color:var(--faint)}
 <script>
 /* ===================== core ===================== */
 const KEY = 'goaldigger2026';
-/* BUILD_STAMP */ const BUILD = '2026-09-03.2231';
+/* BUILD_STAMP */ const BUILD = '2026-09-04.0734';
 const YEAR = 2026;                       /* the year this planner began */
 const CURRENT_YEAR = new Date().getFullYear();
 const MONTHS = ['January','February','March','April','May','June','July','August','September','October','November','December'];
@@ -1226,8 +1226,12 @@ function moveDayTaskToWeek(arr, i, y, w) {
 function moveControl(arr, i, ctx, redraw) {
   const item = arr[i];
   if (typeof ctx === 'string') ctx = { kind: 'day', iso: ctx };
-  const anchor = ctx.iso ? parseIso(ctx.iso)
-    : ctx.kind === 'week' ? mondayOf(ctx.y, ctx.w) : new Date();
+  /* anchor the calendar on today when the source is in the past — moving a
+     three-week-old leftover into the week it came from helps nobody */
+  const today0 = new Date(new Date().toDateString());
+  let anchor = ctx.iso ? parseIso(ctx.iso)
+    : ctx.kind === 'week' ? mondayOf(ctx.y, ctx.w) : today0;
+  if (anchor < today0) anchor = today0;
   const wrap = E('div', { style: 'padding:0 0 6px 29px' });
   wrap.append(E('button', {
     cls: 'tag', style: 'border-style:dashed;color:var(--faint)', text: '\u2192 push',
@@ -1833,6 +1837,7 @@ function viewToday() {
         E('button', { cls: 'x', text: '\u00d7', 'aria-label': 'Drop',
           onclick: () => { const dd = S.days[o.dk]; dd.tasks.splice(o.i, 1); save(true); render(); } })
       ]));
+      cc.append(moveControl(S.days[o.dk].tasks, o.i, { kind: 'day', iso: o.dk }, render));
     });
     if (carried.length > 6) cc.append(E('button', { cls: 'btn ghost', style: 'margin-top:8px',
       text: 'See all ' + carried.length, onclick: () => go('more', 'loose') }));
@@ -2107,7 +2112,8 @@ function viewWeek() {
     c3.append(E('div', { cls: 'rule' }));
     c3.append(E('div', { cls: 'head' }, [E('h3', { text: 'Still open in the days' }),
       E('span', { cls: 'pct', text: openDays.length })]));
-    openDays.forEach(o => c3.append(E('div', { cls: 'list-item' }, [
+    openDays.forEach(o => {
+      c3.append(E('div', { cls: 'list-item' }, [
       E('button', { cls: 'box', style: 'flex:none',
         html: '<svg viewBox="0 0 12 12"><polyline points="1.5,6.5 4.5,9.5 10.5,2.5"/></svg>',
         onclick: () => { o.t.d = true; save(true); render(); } }),
@@ -2117,7 +2123,9 @@ function viewWeek() {
       ]),
       E('button', { cls: 'tag acc', text: 'To the week',
         onclick: () => { pullIntoWeek(o, wkKey); render(); } })
-    ])));
+      ]));
+      c3.append(moveControl(S.days[o.dk].tasks, o.i, { kind: 'day', iso: o.dk }, render));
+    });
   }
 
   /* pull work up into the week at any time */
@@ -3816,6 +3824,7 @@ function pageLoose() {
         E('button', { cls: 'tag acc', text: 'Today', onclick: () => { moveTaskToDay(o, today); render(); } }),
         E('button', { cls: 'x', text: '\u00d7', onclick: () => { S.days[o.dk].tasks.splice(o.i, 1); save(true); render(); } })
       ]));
+      c.append(moveControl(S.days[o.dk].tasks, o.i, { kind: 'day', iso: o.dk }, render));
     });
     v.append(c);
   }
@@ -3824,7 +3833,8 @@ function pageLoose() {
     const c = E('div', { cls: 'card' });
     c.append(E('div', { cls: 'head' }, [E('h2', { text: 'From the weeks' }),
       E('span', { cls: 'pct', text: weekOpen.length })]));
-    weekOpen.forEach(o => c.append(E('div', { cls: 'list-item' }, [
+    weekOpen.forEach(o => {
+      c.append(E('div', { cls: 'list-item' }, [
       E('button', { cls: 'box', style: 'flex:none',
         html: '<svg viewBox="0 0 12 12"><polyline points="1.5,6.5 4.5,9.5 10.5,2.5"/></svg>',
         onclick: () => { o.t.d = true; save(true); render(); } }),
@@ -3835,7 +3845,10 @@ function pageLoose() {
       E('button', { cls: 'tag acc', text: 'Today', onclick: () => {
         day(today).tasks.push(S.weeks[o.wk].todos.splice(o.i, 1)[0]); save(true); render(); } }),
       E('button', { cls: 'x', text: '\u00d7', onclick: () => { S.weeks[o.wk].todos.splice(o.i, 1); save(true); render(); } })
-    ])));
+      ]));
+      c.append(moveControl(S.weeks[o.wk].todos, o.i,
+        { kind: 'week', y: Number(o.wk.slice(0, 4)), w: Number(o.wk.slice(6)) }, render));
+    });
     v.append(c);
   }
 
