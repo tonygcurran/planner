@@ -182,7 +182,7 @@ textarea::placeholder,input::placeholder{color:var(--faint)}
 <script>
 /* ===================== core ===================== */
 const KEY = 'goaldigger2026';
-/* BUILD_STAMP */ const BUILD = '2026-09-04.0734';
+/* BUILD_STAMP */ const BUILD = '2026-09-19.0000';
 const YEAR = 2026;                       /* the year this planner began */
 const CURRENT_YEAR = new Date().getFullYear();
 const MONTHS = ['January','February','March','April','May','June','July','August','September','October','November','December'];
@@ -1169,13 +1169,46 @@ function goalLink(item, redraw) {
 function tasksForGoal(id) {
   const out = [];
   Object.keys(S.days).sort().forEach(dk => (S.days[dk].tasks || []).forEach(t => {
-    if (t.g === id) out.push({ where: dk, t });
+    if (t.g === id) out.push({ where: dk, dk, t });
   }));
   Object.keys(S.weeks).sort().forEach(wk => {
-    (S.weeks[wk].todos || []).forEach(t => { if (t.g === id) out.push({ where: wk.replace('-W', ' week '), t }); });
-    (S.weeks[wk].goals || []).forEach(t => { if (t.g === id) out.push({ where: wk.replace('-W', ' week ') + ' \u00b7 weekly goal', t }); });
+    (S.weeks[wk].todos || []).forEach(t => { if (t.g === id) out.push({ where: wk.replace('-W', ' week '), wk, t }); });
+    (S.weeks[wk].goals || []).forEach(t => { if (t.g === id) out.push({ where: wk.replace('-W', ' week ') + ' \u00b7 weekly goal', wk, t }); });
   });
   return out;
+}
+
+/* a task shown away from its own list: where it sits, its note, and a way in */
+function jumpTo(x) {
+  if (x.dk) { R.day = x.dk; go('today'); return; }
+  if (x.wk) { R.wk = { y: Number(x.wk.slice(0, 4)), w: Number(x.wk.slice(6)) }; go('week'); }
+}
+function awayRow(x, extra) {
+  const t = x.t;
+  const rows = [
+    E('button', { cls: 'box' + (t.d ? ' on' : ''), style: 'flex:none',
+      html: '<svg viewBox="0 0 12 12"><polyline points="1.5,6.5 4.5,9.5 10.5,2.5"/></svg>',
+      onclick: () => { t.d = !t.d; syncTaskToGoal(t); save(true); render(); } }),
+    E('button', { cls: 'txt', style: 'text-align:left', onclick: () => jumpTo(x) }, [
+      E('div', { style: 'font-size:14.5px' + (t.d ? ';color:var(--faint);text-decoration:line-through' : ''), text: t.t }),
+      (t.n || '').trim() ? E('div', { style: 'font-size:13.5px;color:var(--mut);margin-top:2px;' +
+        'display:-webkit-box;-webkit-line-clamp:2;-webkit-box-orient:vertical;overflow:hidden',
+        text: t.n.trim().replace(/\s+/g, ' ') }) : null,
+      E('div', { cls: 'pct', style: 'margin-top:2px;color:var(--acc)',
+        text: (x.dk ? niceDate(x.dk) : x.where) + ' \u203a' }),
+      num(t.c) ? E('div', { cls: 'pct', text: money(num(t.c)) }) : null
+    ])
+  ];
+  if (extra) rows.push(extra);
+  return E('div', { cls: 'list-item' }, rows);
+}
+function niceDate(dk) {
+  const d = parseIso(dk), n = Math.round((d - new Date(new Date().toDateString())) / 86400000);
+  const label = DOW[(d.getDay() + 6) % 7] + ' ' + d.getDate() + ' ' + MONTHS[d.getMonth()].slice(0, 3);
+  if (n === 0) return 'Today';
+  if (n === 1) return 'Tomorrow';
+  if (n === -1) return 'Yesterday';
+  return label;
 }
 
 /* how this week's effort is actually distributed */
@@ -1828,9 +1861,12 @@ function viewToday() {
         E('button', { cls: 'box', style: 'flex:none',
           html: '<svg viewBox="0 0 12 12"><polyline points="1.5,6.5 4.5,9.5 10.5,2.5"/></svg>',
           onclick: () => { o.t.d = true; save(true); render(); } }),
-        E('div', { cls: 'txt' }, [
+        E('button', { cls: 'txt', style: 'text-align:left', onclick: () => { R.day = o.dk; go('today'); } }, [
           E('div', { style: 'font-size:14.5px', text: o.t.t }),
-          E('div', { cls: 'pct', text: o.dk })
+          (o.t.n || '').trim() ? E('div', { style: 'font-size:13.5px;color:var(--mut);margin-top:2px;' +
+            'display:-webkit-box;-webkit-line-clamp:2;-webkit-box-orient:vertical;overflow:hidden',
+            text: o.t.n.trim().replace(/\s+/g, ' ') }) : null,
+          E('div', { cls: 'pct', style: 'color:var(--acc)', text: niceDate(o.dk) + ' \u203a' })
         ]),
         E('button', { cls: 'tag acc', text: 'Move here',
           onclick: () => { moveTaskToDay(o, k); render(); } }),
@@ -2091,7 +2127,8 @@ function viewWeek() {
           onclick: () => { t.d = !t.d; save(); render(); } }),
         E('div', { cls: 'txt' }, [
           E('div', { cls: (t.d ? 'done' : ''), style: 'font-size:14px;padding-top:2px', text: t.t || '\u2014' }),
-          (t.n || '').trim() ? E('div', { cls: 'pct', text: t.n.trim().replace(/\n+/g, ' ').slice(0, 60) }) : null
+          (t.n || '').trim() ? E('div', { cls: 'pct', text: t.n.trim().replace(/\s+/g, ' ').slice(0, 60) }) : null,
+          num(t.c) ? E('div', { cls: 'pct', text: money(num(t.c)) }) : null
         ])
       ]));
     });
@@ -2117,9 +2154,13 @@ function viewWeek() {
       E('button', { cls: 'box', style: 'flex:none',
         html: '<svg viewBox="0 0 12 12"><polyline points="1.5,6.5 4.5,9.5 10.5,2.5"/></svg>',
         onclick: () => { o.t.d = true; save(true); render(); } }),
-      E('div', { cls: 'txt' }, [
+      E('button', { cls: 'txt', style: 'text-align:left', onclick: () => { R.day = o.dk; go('today'); } }, [
         E('div', { style: 'font-size:14.5px', text: o.t.t }),
-        E('div', { cls: 'pct', text: DOW[(parseIso(o.dk).getDay() + 6) % 7] + ' ' + o.dk.slice(8) })
+        (o.t.n || '').trim() ? E('div', { style: 'font-size:13.5px;color:var(--mut);margin-top:2px;' +
+          'display:-webkit-box;-webkit-line-clamp:2;-webkit-box-orient:vertical;overflow:hidden',
+          text: o.t.n.trim().replace(/\s+/g, ' ') }) : null,
+        E('div', { cls: 'pct', style: 'color:var(--acc)',
+          text: DOW[(parseIso(o.dk).getDay() + 6) % 7] + ' ' + o.dk.slice(8) + ' \u203a' })
       ]),
       E('button', { cls: 'tag acc', text: 'To the week',
         onclick: () => { pullIntoWeek(o, wkKey); render(); } })
@@ -2800,15 +2841,7 @@ function viewGoal(id) {
     const doneN = linked.filter(x => x.t.d).length;
     tc2.append(E('div', { cls: 'head' }, [E('h2', { text: 'Work toward this' }),
       E('span', { cls: 'pct', text: doneN + ' of ' + linked.length + ' done' })]));
-    linked.slice(-12).reverse().forEach(x => tc2.append(E('div', { cls: 'list-item' }, [
-      E('button', { cls: 'box' + (x.t.d ? ' on' : ''), style: 'flex:none',
-        html: '<svg viewBox="0 0 12 12"><polyline points="1.5,6.5 4.5,9.5 10.5,2.5"/></svg>',
-        onclick: () => { x.t.d = !x.t.d; syncTaskToGoal(x.t); save(true); render(); } }),
-      E('div', { cls: 'txt' }, [
-        E('div', { style: 'font-size:14.5px' + (x.t.d ? ';color:var(--faint);text-decoration:line-through' : ''), text: x.t.t }),
-        E('div', { cls: 'pct', text: x.where })
-      ])
-    ])));
+    linked.slice(-12).reverse().forEach(x => tc2.append(awayRow(x)));
     if (linked.length > 12) tc2.append(E('div', { cls: 'pct', style: 'margin-top:8px', text: 'showing the last 12' }));
     v.append(tc2);
   }
@@ -2861,11 +2894,12 @@ const openProjects = () => S.projects.filter(p => !p.done);
 function tasksForProject(id) {
   const out = [];
   Object.keys(S.days).sort().forEach(dk => (S.days[dk].tasks || []).forEach(t => {
-    if (t.p === id) out.push({ where: dk, t });
+    if (t.p === id) out.push({ where: dk, dk, t });
   }));
-  Object.keys(S.weeks).sort().forEach(wk => (S.weeks[wk].todos || []).forEach(t => {
-    if (t.p === id) out.push({ where: wk.replace('-W', ' week '), t });
-  }));
+  Object.keys(S.weeks).sort().forEach(wk => {
+    (S.weeks[wk].todos || []).forEach(t => { if (t.p === id) out.push({ where: wk.replace('-W', ' week '), wk, t }); });
+    (S.weeks[wk].goals || []).forEach(t => { if (t.p === id) out.push({ where: wk.replace('-W', ' week ') + ' \u00b7 weekly goal', wk, t }); });
+  });
   return out;
 }
 function projectProgress(p) {
@@ -3029,15 +3063,7 @@ function viewProject(id) {
     const sc = E('div', { cls: 'card' });
     sc.append(E('div', { cls: 'head' }, [E('h2', { text: 'Scheduled' }),
       E('span', { cls: 'pct', text: sched.filter(x => x.t.d).length + ' of ' + sched.length + ' done' })]));
-    sched.slice(-15).reverse().forEach(x => sc.append(E('div', { cls: 'list-item' }, [
-      E('button', { cls: 'box' + (x.t.d ? ' on' : ''), style: 'flex:none',
-        html: '<svg viewBox="0 0 12 12"><polyline points="1.5,6.5 4.5,9.5 10.5,2.5"/></svg>',
-        onclick: () => { x.t.d = !x.t.d; syncTaskToGoal(x.t); save(true); render(); } }),
-      E('div', { cls: 'txt' }, [
-        E('div', { style: 'font-size:14.5px' + (x.t.d ? ';color:var(--faint);text-decoration:line-through' : ''), text: x.t.t }),
-        E('div', { cls: 'pct', text: x.where })
-      ])
-    ])));
+    sched.slice(-15).reverse().forEach(x => sc.append(awayRow(x)));
     v.append(sc);
   }
 
@@ -3817,9 +3843,13 @@ function pageLoose() {
         E('button', { cls: 'box', style: 'flex:none',
           html: '<svg viewBox="0 0 12 12"><polyline points="1.5,6.5 4.5,9.5 10.5,2.5"/></svg>',
           onclick: () => { o.t.d = true; save(true); render(); } }),
-        E('div', { cls: 'txt' }, [
+        E('button', { cls: 'txt', style: 'text-align:left', onclick: () => { R.day = o.dk; go('today'); } }, [
           E('div', { style: 'font-size:14.5px', text: o.t.t }),
-          E('div', { cls: 'pct', text: o.dk + (age > 0 ? ' \u00b7 ' + age + ' day' + (age === 1 ? '' : 's') + ' ago' : '') })
+          (o.t.n || '').trim() ? E('div', { style: 'font-size:13.5px;color:var(--mut);margin-top:2px;' +
+            'display:-webkit-box;-webkit-line-clamp:2;-webkit-box-orient:vertical;overflow:hidden',
+            text: o.t.n.trim().replace(/\s+/g, ' ') }) : null,
+          E('div', { cls: 'pct', style: 'color:var(--acc)',
+            text: o.dk + (age > 0 ? ' \u00b7 ' + age + ' day' + (age === 1 ? '' : 's') + ' ago' : '') + ' \u203a' })
         ]),
         E('button', { cls: 'tag acc', text: 'Today', onclick: () => { moveTaskToDay(o, today); render(); } }),
         E('button', { cls: 'x', text: '\u00d7', onclick: () => { S.days[o.dk].tasks.splice(o.i, 1); save(true); render(); } })
@@ -3838,9 +3868,13 @@ function pageLoose() {
       E('button', { cls: 'box', style: 'flex:none',
         html: '<svg viewBox="0 0 12 12"><polyline points="1.5,6.5 4.5,9.5 10.5,2.5"/></svg>',
         onclick: () => { o.t.d = true; save(true); render(); } }),
-      E('div', { cls: 'txt' }, [
+      E('button', { cls: 'txt', style: 'text-align:left',
+        onclick: () => { R.wk = { y: Number(o.wk.slice(0, 4)), w: Number(o.wk.slice(6)) }; go('week'); } }, [
         E('div', { style: 'font-size:14.5px', text: o.t.t }),
-        E('div', { cls: 'pct', text: o.wk.replace('-W', ' \u00b7 week ') })
+        (o.t.n || '').trim() ? E('div', { style: 'font-size:13.5px;color:var(--mut);margin-top:2px;' +
+          'display:-webkit-box;-webkit-line-clamp:2;-webkit-box-orient:vertical;overflow:hidden',
+          text: o.t.n.trim().replace(/\s+/g, ' ') }) : null,
+        E('div', { cls: 'pct', style: 'color:var(--acc)', text: o.wk.replace('-W', ' \u00b7 week ') + ' \u203a' })
       ]),
       E('button', { cls: 'tag acc', text: 'Today', onclick: () => {
         day(today).tasks.push(S.weeks[o.wk].todos.splice(o.i, 1)[0]); save(true); render(); } }),
@@ -4630,9 +4664,10 @@ const MODES = [
     hint: 'Anticipatory: what the next session should try, change, or test. Intentions the work has generated.' }
 ];
 
-let studioView = 'list', editingId = null, openEntry = null, themeFilter = null, lightbox = null, formDate = null;
+let studioView = 'list', editingId = null, openEntry = null, themeFilter = null, lightbox = null,
+    formDate = null, newKind = 'reflect', kindFilter = null;
 
-const newEntry = () => ({ id: uid(), date: iso(new Date()), title: '', did: '',
+const newEntry = () => ({ id: uid(), kind: 'reflect', date: iso(new Date()), title: '', did: '',
   inAction: '', onAction: '', forAction: '', media: [], links: [], themes: [],
   goal: '', work: '', key: false, pull: '', claim: '' });
 
@@ -4749,8 +4784,8 @@ function viewStudio() {
     E('div', { cls: 'eyebrow', text: 'Creative reflective practice · after Linda Candy' }),
     E('h1', { text: 'Studio' }),
     E('div', { cls: 'sub', style: 'color:var(--mut)',
-      text: S.studio.entries.filter(e => !e.draft).length + ' session' +
-        (S.studio.entries.filter(e => !e.draft).length === 1 ? '' : 's') + ' documented' })
+      text: reflections().length + ' reflection' + (reflections().length === 1 ? '' : 's') +
+        (logs().length ? ' \u00b7 ' + logs().length + ' update' + (logs().length === 1 ? '' : 's') : '') })
   ])));
 
   const nav = E('div', { cls: 'chips', style: 'margin-bottom:14px' });
@@ -4771,8 +4806,12 @@ function viewStudio() {
   else pc.append(E('div', { cls: 'empty', text: 'Set the project title and research questions — the exegesis draft is built around them.' }));
   v.append(pc);
 
-  v.append(E('button', { cls: 'btn fill', style: 'margin-bottom:12px', text: '+ New session',
-    onclick: () => { editingId = null; studioView = 'form'; window.scrollTo(0, 0); render(); } }));
+  v.append(E('div', { cls: 'btnrow', style: 'margin-bottom:12px' }, [
+    E('button', { cls: 'btn fill', text: '+ Reflection',
+      onclick: () => { editingId = null; newKind = 'reflect'; studioView = 'form'; window.scrollTo(0, 0); render(); } }),
+    E('button', { cls: 'btn', text: '+ Studio update',
+      onclick: () => { editingId = null; newKind = 'log'; studioView = 'form'; window.scrollTo(0, 0); render(); } })
+  ]));
 
   const themes = themeCounts();
   if (themes.length) {
@@ -4801,8 +4840,18 @@ function viewStudio() {
     v.append(c);
   });
 
+  if (logs().length && reflections().length) {
+    const kf = E('div', { cls: 'chips', style: 'margin-bottom:12px' });
+    [[null, 'Everything'], ['reflect', 'Reflections'], ['log', 'Updates']].forEach(([k, label]) =>
+      kf.append(E('button', { cls: 'chip' + (kindFilter === k ? ' on' : ''),
+        style: kindFilter === k ? 'background:var(--acc)' : '', text: label,
+        onclick: () => { kindFilter = k; render(); } })));
+    v.append(kf);
+  }
+
   const list = S.studio.entries
     .filter(e => !e.draft)
+    .filter(e => !kindFilter || (kindFilter === 'log' ? isLog(e) : !isLog(e)))
     .filter(e => !themeFilter || (e.themes || []).some(x => sameTheme(x, themeFilter)))
     .slice().sort((a, b) => a.date < b.date ? 1 : -1);
 
@@ -4814,8 +4863,10 @@ function viewStudio() {
     c.append(E('button', { style: 'display:block;width:100%;text-align:left', onclick: () => { openEntry = openEntry === e.id ? null : e.id; render(); } }, [
       E('div', { cls: 'eyebrow', text: e.date }),
       E('div', { style: 'font-family:var(--disp);font-size:20px;text-transform:uppercase;letter-spacing:.04em;font-weight:700;line-height:1.05;margin:2px 0 6px', text: e.title || 'Untitled session' }),
-      E('div', { style: 'display:flex;gap:5px;align-items:center' }, MODES.map(m =>
-        E('span', { style: `width:22px;height:4px;border-radius:2px;background:${m.hex};opacity:${(e[m.id] || '').trim() ? 1 : .16}` })
+      E('div', { style: 'display:flex;gap:5px;align-items:center' }, (isLog(e)
+        ? [E('span', { cls: 'tag', style: 'font-size:10px;padding:2px 6px', text: 'update' })]
+        : MODES.map(m =>
+          E('span', { style: `width:22px;height:4px;border-radius:2px;background:${m.hex};opacity:${(e[m.id] || '').trim() ? 1 : .16}` }))
       ).concat([
         (e.media || []).length ? E('span', { cls: 'pct', style: 'margin-left:6px', text: e.media.length + ' image' + (e.media.length === 1 ? '' : 's') }) : null,
         e.key ? E('span', { cls: 'tag acc', style: 'margin-left:6px', text: 'Cited' }) : null,
@@ -4827,7 +4878,7 @@ function viewStudio() {
       if ((e.claim || '').trim()) c.append(E('div', { style: 'margin-top:14px;padding-left:11px;border-left:3px solid var(--acc)' }, [
         E('h3', { style: 'color:var(--acc)', text: 'What this showed' }),
         E('p', { style: 'margin:0;font-size:15px' }, linkified(e.claim))]));
-      if (e.did) c.append(E('div', { style: 'margin-top:14px' }, [E('h3', { text: 'What I did' }),
+      if (e.did) c.append(E('div', { style: 'margin-top:14px' }, [E('h3', { text: isLog(e) ? 'What happened' : 'What I did' }),
         E('p', { style: 'margin:0;font-size:14.5px' }, linkified(e.did))]));
       MODES.forEach(m => {
         if (!(e[m.id] || '').trim()) return;
@@ -4898,7 +4949,7 @@ function studioForm() {
     /* keep new sessions in storage from the first keystroke, as a draft */
     editing = S.studio.entries.find(x => x.draft);
     if (!editing) {
-      editing = Object.assign(newEntry(), { draft: true }, formDate ? { date: formDate } : {});
+      editing = Object.assign(newEntry(), { draft: true, kind: newKind || 'reflect' }, formDate ? { date: formDate } : {});
       S.studio.entries.push(editing);
       save(true);
     }
@@ -4911,14 +4962,34 @@ function studioForm() {
   if (isDraft) v.append(E('p', { cls: 'lede', style: 'margin-top:-4px',
     text: 'Saving as you type. Leave whenever you like \u2014 it will be waiting under Studio as a draft.' }));
 
+  const log = isLog(e);
   const c = E('div', { cls: 'card' });
+  const kinds = E('div', { cls: 'chips', style: 'margin-bottom:12px' });
+  [['log', 'Studio update'], ['reflect', 'Reflective practice']].forEach(([k, label]) =>
+    kinds.append(E('button', { cls: 'chip' + ((k === 'log') === log ? ' on' : ''),
+      style: (k === 'log') === log ? 'background:var(--acc)' : '', text: label,
+      onclick: () => { e.kind = k; save(true); render(); } })));
+  c.append(kinds);
   c.append(field('Date', bindText(e, 'date', '', 'date')));
-  c.append(field('Session title', bindText(e, 'title', 'e.g. Diffraction layer tests, panel 3')));
+  c.append(field('Title', bindText(e, 'title', log ? 'e.g. Thursday in the studio' : 'e.g. Diffraction layer tests, panel 3')));
   e.links = e.links || [];
-  c.append(field('What I did', areaWithLinks(e, 'did', '', 1, e.links)));
+  c.append(field(log ? 'What happened' : 'What I did',
+    areaWithLinks(e, 'did', log ? 'Talk or type it straight through \u2014 no need to sort it now.' : '', 1, e.links)));
+  if (log) c.append(E('p', { cls: 'lede', style: 'margin:8px 0 0',
+    text: 'A plain update. It still joins the record and can be tagged, cited and attached to a work \u2014 it just does not claim to be structured reflection. Switch it over whenever you want to pull the three modes out of it.' }));
+  else if (MODES.every(m => !(e[m.id] || '').trim()) && (e.did || '').trim())
+    c.append(E('p', { cls: 'lede', style: 'margin:8px 0 0',
+      text: 'Nothing in the three modes yet \u2014 read back what you wrote above and pull it apart below.' }));
   v.append(c);
 
-  MODES.forEach(m => {
+  if (log && MODES.some(m => (e[m.id] || '').trim())) {
+    const kept = E('div', { cls: 'card' });
+    kept.append(E('p', { cls: 'lede', style: 'margin:0',
+      text: 'This entry has reflective writing in it already. Switching back shows it again \u2014 nothing was lost.' }));
+    v.append(kept);
+  }
+
+  if (!log) MODES.forEach(m => {
     const mc = E('div', { cls: 'card', style: `border-left:3px solid ${m.hex}` });
     mc.append(E('h3', { style: `color:${m.hex}`, text: m.label }));
     mc.append(E('p', { cls: 'lede', text: m.hint }));
@@ -5048,6 +5119,9 @@ function studioStore() {
 }
 const workOf = id => (S.studio.works || []).find(w => w.id === id);
 const sessionsOfWork = id => S.studio.entries.filter(e => !e.draft && e.work === id);
+const isLog = e => e.kind === 'log';
+const reflections = () => S.studio.entries.filter(e => !e.draft && !isLog(e));
+const logs = () => S.studio.entries.filter(e => !e.draft && isLog(e));
 const evidenceSessions = () => S.studio.entries.filter(e => !e.draft && e.key);
 const evidenceNotes = () => (S.notes || []).filter(n => n.key);
 const evidenceJournal = () => journalEntries().filter(j => j.obj.key);
@@ -5420,7 +5494,9 @@ function exegesisMarkdown() {
   L.push('# ' + (p.title || 'Untitled project') + ' — exegesis draft\n');
   const b = exegesisWords();
   const nSess = S.studio.entries.filter(e => !e.draft).length;
-  L.push('_Generated ' + iso(new Date()) + '. ' + nSess + ' documented session' + (nSess === 1 ? '' : 's') +
+  L.push('_Generated ' + iso(new Date()) + '. ' + reflections().length + ' structured reflection' +
+    (reflections().length === 1 ? '' : 's') +
+    (logs().length ? ' and ' + logs().length + ' studio update' + (logs().length === 1 ? '' : 's') : '') +
     ', ' + evidenceSessions().length + ' cited. ' +
     (b.total ? b.total.toLocaleString() + ' words drafted towards ' + WORD_TARGET.toLocaleString() + '.'
              : 'Nothing drafted yet \u2014 see what this draft still needs, below.') + '_\n');
@@ -5434,6 +5510,9 @@ function exegesisMarkdown() {
   if (!S.studio.works.length) gaps.push('**No works defined**, so there are no sections for the argument to sit in. Studio \u2192 Works, or make one from a goal.');
   else if (S.studio.works.some(w => !(w.statement || '').trim()))
     gaps.push('**Some works have no statement** of what they are doing \u2014 that paragraph opens each section.');
+  const unstructured = reflections().filter(e => MODES.every(m => !(e[m.id] || '').trim()) && (e.did || '').trim());
+  if (unstructured.length) gaps.push('**' + unstructured.length + ' reflection' + (unstructured.length === 1 ? '' : 's') +
+    ' have no writing in the three modes** \u2014 either pull them apart, or switch them to studio updates so the count stays honest.');
   if (!claimed.length) gaps.push('**No findings recorded.** A finding is a claim in a sentence with sessions cited under it. Without them this is a record, not an argument. Studio \u2192 Findings.');
   if (!citedSess.length && !evidenceNotes().length) gaps.push('**Nothing cited.** Open a session and tick \u201cCite this\u201d, then mark the passage worth quoting.');
   const orphan = S.studio.entries.filter(e => !e.draft && !e.work).length;
@@ -5447,8 +5526,9 @@ function exegesisMarkdown() {
 
   L.push('## Methodology\n');
   L.push('This research was conducted through a reflective practice methodology. Studio sessions were documented at the time of making and reflected on in three temporal modes — reflection in action, reflection on action, and reflection for action — following the account of the creative reflective practitioner developed by Linda Candy, building on Donald Schön. Because in-the-moment noticing cannot be reconstructed retrospectively, documentation was made during or immediately after each session rather than recalled later.\n');
-  L.push('The corpus comprises ' + S.studio.entries.filter(e => !e.draft).length +
-    ' documented sessions. Rather than present that record in full, this exegesis proceeds by claim: findings are stated, then evidenced by selected sessions, with the complete record retained as an appendix. Selection criteria and the relationship between artefact and text are set out below.\n');
+  L.push('The corpus comprises ' + reflections().length + ' structured reflections' +
+    (logs().length ? ' alongside ' + logs().length + ' briefer studio updates, which record activity without claiming the three-mode structure' : '') +
+    '. Rather than present that record in full, this exegesis proceeds by claim: findings are stated, then evidenced by selected sessions, with the complete record retained as an appendix. Selection criteria and the relationship between artefact and text are set out below.\n');
   L.push('[Expand: your documentation methods, your selection criteria for evidence, the status of the artefacts in the examination, and full citations for Candy and Schön in your required style.]\n');
 
   /* the argument: findings nested, gathered under the work they belong to */
@@ -5555,13 +5635,14 @@ function exegesisMarkdown() {
 function sessionArchiveMarkdown() {
   const L = [];
   L.push('# Session record — ' + (S.studio.project.title || 'Untitled project') + '\n');
-  L.push('_The complete documentation, in order. Cited sessions are marked._\n');
+  L.push('_The complete documentation, in order. Studio updates and cited entries are marked._\n');
   S.studio.entries.filter(e => !e.draft).slice().sort((a, b) => a.date < b.date ? -1 : 1).forEach(e => {
     const w = workOf(e.work);
-    L.push('\n## ' + e.date + ' — ' + (e.title || 'Untitled session') + (e.key ? ' [cited]' : '') + '\n');
+    L.push('\n## ' + e.date + ' — ' + (e.title || 'Untitled session') +
+      (isLog(e) ? ' [update]' : '') + (e.key ? ' [cited]' : '') + '\n');
     if (w) L.push('_' + (w.title || 'Untitled work') + '_\n');
     if ((e.claim || '').trim()) L.push('**What this showed**  \n' + e.claim.trim() + '\n');
-    if (e.did) L.push('**What I did**  \n' + e.did.trim() + '\n');
+    if (e.did) L.push('**' + (isLog(e) ? 'What happened' : 'What I did') + '**  \n' + e.did.trim() + '\n');
     MODES.forEach(m => { if ((e[m.id] || '').trim()) L.push('**' + m.label + '**  \n' + e[m.id].trim() + '\n'); });
     if ((e.pull || '').trim()) L.push('**Marked passage**  \n> ' + e.pull.trim() + '\n');
     if ((e.links || []).length) e.links.forEach(l => L.push('- ' + (l.url ? '[' + (l.label || l.url) + '](' + l.url + ')' : l.label)));
