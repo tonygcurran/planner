@@ -182,7 +182,7 @@ textarea::placeholder,input::placeholder{color:var(--faint)}
 <script>
 /* ===================== core ===================== */
 const KEY = 'goaldigger2026';
-/* BUILD_STAMP */ const BUILD = '2026-09-19.0000';
+/* BUILD_STAMP */ const BUILD = '2026-10-06.0835';
 const YEAR = 2026;                       /* the year this planner began */
 const CURRENT_YEAR = new Date().getFullYear();
 const MONTHS = ['January','February','March','April','May','June','July','August','September','October','November','December'];
@@ -760,27 +760,153 @@ function ritualRate(rid, y, m) {
 /* habits carrying a particular goal or project */
 function habitsForGoal(id) { return S.habits.filter(h => h.g === id || h.p === id); }
 function habitMonthRate(hid, y, m) {
+  const h = S.habits.find(x => x.id === hid);
   const dim = new Date(y, m + 1, 0).getDate(), today = new Date();
-  let days = 0, hit = 0;
-  for (let d = 1; d <= dim; d++) {
-    const dt = new Date(y, m, d);
-    if (dt > today) break;
-    days++;
-    if (logged(iso(dt), hid)) hit++;
+  const lastDay = Math.min(dim, (today.getFullYear() === y && today.getMonth() === m) ? today.getDate() : dim);
+  if (lastDay < 1) return { days: 0, hit: 0, expected: 0, pct: 0 };
+  const from = iso(new Date(y, m, 1)), to = iso(new Date(y, m, lastDay));
+  const hit = countBetween(hid, from, to);
+  const expected = h ? expectedBetween(h, from, to) : lastDay;
+  return { days: Math.round(expected), hit, expected,
+    pct: expected > 0 ? Math.min(100, Math.round(hit / expected * 100)) : 0 };
+}
+
+/* ===================== how often a habit is meant to happen ===================== */
+const FREQ_KINDS = [
+  ['daily', 'Every day'],
+  ['days', 'Certain days'],
+  ['perWeek', 'Times a week'],
+  ['perMonth', 'Times a month'],
+  ['everyN', 'Every so many days']
+];
+function hFreq(h) {
+  const f = h.freq || (h.freq = { kind: 'daily' });
+  f.kind = f.kind || 'daily';
+  if (f.kind === 'days') f.days = f.days || [0, 2, 4];
+  if (f.kind !== 'daily' && f.kind !== 'days') f.n = f.n || (f.kind === 'perMonth' ? 4 : 3);
+  return f;
+}
+function freqLabel(h) {
+  const f = hFreq(h);
+  if (f.kind === 'daily') return 'every day';
+  if (f.kind === 'days') return !(f.days || []).length ? 'no days picked yet'
+    : f.days.length === 7 ? 'every day'
+    : f.days.slice().sort((a, b) => a - b).map(d => DOW[d]).join(', ');
+  if (f.kind === 'perWeek') return f.n + '\u00d7 a week';
+  if (f.kind === 'perMonth') return f.n + '\u00d7 a month';
+  return 'every ' + f.n + ' days';
+}
+const dowOf = dk => (parseIso(dk).getDay() + 6) % 7;
+
+/* how many times it was done inside a stretch of days */
+function countBetween(hid, fromIso, toIso) {
+  let n = 0;
+  Object.keys(S.hlog || {}).forEach(dk => {
+    if (dk >= fromIso && dk <= toIso && S.hlog[dk].includes(hid)) n++;
+  });
+  return n;
+}
+function weekBounds(dk) {
+  const w = isoWeek(parseIso(dk)), mon = mondayOf(w.y, w.w);
+  return [iso(mon), iso(addDays(mon, 6))];
+}
+function monthBounds(dk) {
+  const d = parseIso(dk);
+  return [iso(new Date(d.getFullYear(), d.getMonth(), 1)), iso(new Date(d.getFullYear(), d.getMonth() + 1, 0))];
+}
+/* done so far in the period this day sits in, and the target */
+function periodProgress(h, dk) {
+  const f = hFreq(h);
+  if (f.kind === 'perWeek') { const [a, b] = weekBounds(dk); return { done: countBetween(h.id, a, b), target: f.n, unit: 'this week' }; }
+  if (f.kind === 'perMonth') { const [a, b] = monthBounds(dk); return { done: countBetween(h.id, a, b), target: f.n, unit: 'this month' }; }
+  return null;
+}
+/* the last time it was done strictly before a given day */
+function lastBefore(hid, dk) {
+  const days = Object.keys(S.hlog || {}).filter(d => d < dk && S.hlog[d].includes(hid)).sort();
+  return days.length ? days[days.length - 1] : null;
+}
+/* is it asked for on this day? */
+function dueOn(h, dk) {
+  const f = hFreq(h);
+  if (f.kind === 'daily') return true;
+  if (f.kind === 'days') return !(f.days || []).length || f.days.includes(dowOf(dk));
+  if (f.kind === 'everyN') {
+    const last = lastBefore(h.id, dk);
+    if (!last) return true;
+    return Math.round((parseIso(dk) - parseIso(last)) / 86400000) >= f.n;
   }
-  return { days, hit, pct: days ? Math.round(hit / days * 100) : 0 };
+  const p = periodProgress(h, dk);
+  return p ? p.done < p.target || logged(dk, h.id) : true;
+}
+/* how many times it should have happened across a window */
+function expectedBetween(h, fromIso, toIso) {
+  const f = hFreq(h);
+  const days = Math.round((parseIso(toIso) - parseIso(fromIso)) / 86400000) + 1;
+  if (f.kind === 'daily') return days;
+  if (f.kind === 'days') {
+    if (!(f.days || []).length) return days;
+    let n = 0;
+    for (let i = 0; i < days; i++) if (f.days.includes(dowOf(iso(addDays(parseIso(fromIso), i))))) n++;
+    return n;
+  }
+  if (f.kind === 'perWeek') return f.n * days / 7;
+  if (f.kind === 'perMonth') return f.n * days / 30.4;
+  return days / f.n;
 }
 
 function streak(hid) {
-  let n = 0, d = new Date();
+  const h = S.habits.find(x => x.id === hid) || { id: hid };
+  const f = hFreq(h);
+  const today = new Date();
+  if (f.kind === 'perWeek' || f.kind === 'perMonth') {
+    /* count the periods in a row that met their target */
+    let n = 0, cursor = today;
+    for (let i = 0; i < 260; i++) {
+      const dk = iso(cursor);
+      const [a, b] = f.kind === 'perWeek' ? weekBounds(dk) : monthBounds(dk);
+      const done = countBetween(hid, a, b);
+      const current = iso(today) >= a && iso(today) <= b;
+      if (done >= f.n) n++;
+      else if (!current) break;                     /* a past period that fell short ends it */
+      cursor = addDays(parseIso(a), -1);
+    }
+    return n;
+  }
+  if (f.kind === 'everyN') {
+    const days = Object.keys(S.hlog || {}).filter(d => S.hlog[d].includes(hid)).sort();
+    if (!days.length) return 0;
+    const lastD = parseIso(days[days.length - 1]);
+    if (Math.round((new Date(new Date().toDateString()) - lastD) / 86400000) > f.n) return 0;
+    let n = 1;
+    for (let i = days.length - 1; i > 0; i--) {
+      const gap = Math.round((parseIso(days[i]) - parseIso(days[i - 1])) / 86400000);
+      if (gap <= f.n) n++; else break;
+    }
+    return n;
+  }
+  /* daily, or certain days: count the occasions it was asked for and met */
+  let n = 0, d = today;
   if (!logged(iso(d), hid)) d = addDays(d, -1);
-  while (logged(iso(d), hid)) { n++; d = addDays(d, -1); }
+  for (let i = 0; i < 800; i++) {
+    const dk = iso(d);
+    if (dueOn(h, dk)) {
+      if (logged(dk, hid)) n++; else break;
+    }
+    d = addDays(d, -1);
+  }
   return n;
 }
+const streakUnit = h => (hFreq(h).kind === 'perWeek' ? 'week' : hFreq(h).kind === 'perMonth' ? 'month' : 'day');
+
+/* kept against what was asked, not against the calendar */
 function habitRate(hid, days) {
-  let hit = 0;
-  for (let i = 0; i < days; i++) if (logged(iso(addDays(new Date(), -i)), hid)) hit++;
-  return Math.round(hit / days * 100);
+  const h = S.habits.find(x => x.id === hid);
+  const to = iso(new Date()), from = iso(addDays(new Date(), -(days - 1)));
+  const hit = countBetween(hid, from, to);
+  const expected = h ? expectedBetween(h, from, to) : days;
+  if (expected <= 0) return 0;
+  return Math.min(100, Math.round(hit / expected * 100));
 }
 
 /* ===================== goal progress ===================== */
@@ -942,7 +1068,7 @@ function todayBrief() {
   if (W.focus) L.push('This week: ' + W.focus.split('\n')[0] + '.');
   const open = (D.tasks || []).filter(t => !t.d && t.t.trim());
   L.push(open.length ? 'Today: ' + open.map(t => t.t).join('; ') + '.' : 'Nothing on today\'s list yet.');
-  const hs = habitsFor().filter(h => !logged(k, h.id));
+  const hs = habitsFor().filter(h => !logged(k, h.id) && dueOn(h, k));
   if (hs.length) L.push('Still to do: ' + hs.map(h => h.name || 'a habit').join(', ') + '.');
   const eng = limbsEngaged(k);
   L.push(eng ? eng + ' of eight limbs met so far.' : 'No practice marked yet.');
@@ -1733,21 +1859,33 @@ function viewToday() {
     hc.append(E('div', { cls: 'empty', text: 'No habits yet. Set one or two per goal — small enough to do on your worst day.' }));
     hc.append(E('button', { cls: 'btn', text: '+ Add habit', style: 'margin-top:10px', onclick: () => go('more', 'habits') }));
   } else {
-    const chips = E('div', { cls: 'chips' });
-    habitsFor().forEach(h => {
+    const mkChip = (h, dim) => {
       const on = logged(k, h.id);
+      const p = periodProgress(h, k);
       const st = streak(h.id);
-      chips.append(E('button', {
+      return E('button', {
         cls: 'chip' + (on ? ' on' : ''),
-        style: on ? `background:hsl(${h.hue},62%,44%)` : '',
+        style: on ? `background:hsl(${h.hue},62%,44%)` : (dim ? 'opacity:.55;border-style:dashed' : ''),
         onclick: () => { toggleHabit(k, h.id); render(); }
       }, [
         E('span', { cls: 'dot', style: `background:${on ? '#fff' : `hsl(${h.hue},62%,50%)`}` }),
         h.name || 'Habit',
-        st > 1 ? E('span', { style: 'font-size:11.5px;opacity:.7', text: st + 'd' }) : null
-      ]));
-    });
+        p ? E('span', { style: 'font-size:11.5px;opacity:.7', text: p.done + '/' + p.target })
+          : st > 1 ? E('span', { style: 'font-size:11.5px;opacity:.7', text: st + streakUnit(h)[0] }) : null
+      ]);
+    };
+    const asked = habitsFor().filter(h => dueOn(h, k) || logged(k, h.id));
+    const resting = habitsFor().filter(h => !dueOn(h, k) && !logged(k, h.id));
+    const chips = E('div', { cls: 'chips' });
+    asked.forEach(h => chips.append(mkChip(h, false)));
+    if (!asked.length) chips.append(E('div', { cls: 'empty', text: 'Nothing asked of you today.' }));
     hc.append(chips);
+    if (resting.length) {
+      hc.append(E('div', { cls: 'pct', style: 'margin:10px 0 5px', text: 'Not due today' }));
+      const rest = E('div', { cls: 'chips' });
+      resting.forEach(h => rest.append(mkChip(h, true)));
+      hc.append(rest);
+    }
   }
   v.append(hc);
 
@@ -2074,15 +2212,23 @@ function viewWeek() {
       ]));
       let n = 0;
       for (let i = 0; i < 7; i++) {
-        const dk = iso(addDays(mon, i)), on = logged(dk, h.id);
+        const dk = iso(addDays(mon, i)), on = logged(dk, h.id), asked = dueOn(h, dk);
         if (on) n++;
         tr.append(E('td', {}, E('button', {
-          cls: 'cell', style: on ? `background:hsl(${h.hue},62%,48%);border-color:transparent` : '',
+          cls: 'cell',
+          style: on ? `background:hsl(${h.hue},62%,48%);border-color:transparent`
+               : asked ? '' : 'border-style:dashed;opacity:.45',
           'aria-label': h.name + ' ' + dk,
           onclick: () => { toggleHabit(dk, h.id); render(); }
         })));
       }
-      tr.append(E('td', { cls: 'mono', style: 'font-size:12px;color:var(--mut)', text: n }));
+      const f2 = hFreq(h);
+      const target = f2.kind === 'perWeek' ? f2.n
+        : f2.kind === 'days' ? (f2.days || []).length
+        : f2.kind === 'daily' ? 7 : null;
+      tr.append(E('td', { cls: 'mono', style: 'font-size:12px;color:' +
+        (target && n >= target ? 'var(--acc)' : 'var(--mut)'),
+        text: target ? n + '/' + target : String(n) }));
       tb.append(tr);
     });
     tbl.append(tb);
@@ -2375,9 +2521,10 @@ function viewMonth() {
         E('div', { style: 'display:flex;gap:9px;align-items:baseline' }, [
           E('span', { style: `width:9px;height:9px;border-radius:50%;flex:none;background:hsl(${h.hue},62%,50%)` }),
           E('span', { style: 'flex:1;min-width:0;font-size:14.5px', text: h.name || 'Habit' }),
-          E('span', { cls: 'pct', text: rate.hit + '/' + rate.days + '  ' + rate.pct + '%' })
+          E('span', { cls: 'pct', text: rate.hit + '/' + Math.round(rate.expected || rate.days) + '  ' + rate.pct + '%' })
         ]),
-        owner ? E('div', { cls: 'pct', style: 'padding-left:18px', text: 'carries ' + (owner.title || '') }) : null,
+        E('div', { cls: 'pct', style: 'padding-left:18px',
+          text: freqLabel(h) + (owner ? ' \u00b7 carries ' + (owner.title || '') : '') }),
         E('div', { cls: 'bar', style: 'margin-left:18px' },
           E('i', { style: `width:${rate.pct}%;background:hsl(${h.hue},62%,48%)` }))
       ]));
@@ -2825,7 +2972,7 @@ function viewGoal(id) {
       E('div', { style: 'display:flex;gap:9px;align-items:baseline' }, [
         E('span', { style: `width:9px;height:9px;border-radius:50%;flex:none;background:hsl(${h.hue},62%,50%)` }),
         E('span', { style: 'flex:1;min-width:0;font-size:14.5px', text: h.name || 'Habit' }),
-        E('span', { cls: 'pct', text: streak(h.id) + 'd streak \u00b7 ' + habitRate(h.id, 30) + '%' })
+        E('span', { cls: 'pct', text: streak(h.id) + ' ' + streakUnit(h) + ' \u00b7 ' + habitRate(h.id, 30) + '%' })
       ]),
       E('div', { cls: 'bar', style: 'margin-left:18px' },
         E('i', { style: `width:${habitRate(h.id, 30)}%;background:hsl(${h.hue},62%,48%)` }))
@@ -3203,13 +3350,51 @@ function pageHabits() {
       E('div', { style: 'flex:1' }, bindText(h, 'name', 'Habit name')),
       E('button', { cls: 'x', text: '×', onclick: () => { if (confirm('Remove this habit and its history?')) { S.habits.splice(i, 1); save(true); render(); } } })
     ]));
+    const st = streak(h.id), unit = streakUnit(h);
     row.append(E('div', { cls: 'pct', style: 'margin-top:6px;padding-left:32px',
-      text: streak(h.id) + ' day streak \u00b7 ' + habitRate(h.id, 30) + '% of the last 30 days' }));
+      text: freqLabel(h) + ' \u00b7 ' + st + ' ' + unit + (st === 1 ? '' : 's') + ' running \u00b7 ' +
+        habitRate(h.id, 30) + '% kept over 30 days' }));
+
+    const f = hFreq(h);
+    const kinds = E('div', { cls: 'chips', style: 'margin:8px 0 0;padding-left:32px' });
+    FREQ_KINDS.forEach(([k, label]) => kinds.append(E('button', {
+      cls: 'chip' + (f.kind === k ? ' on' : ''), style: (f.kind === k ? 'background:var(--acc);' : '') + 'font-size:11.5px;padding:4px 9px',
+      text: label, onclick: () => { h.freq = { kind: k }; hFreq(h); save(true); render(); } })));
+    row.append(kinds);
+
+    if (f.kind === 'days') {
+      const picks = E('div', { style: 'display:grid;grid-template-columns:repeat(7,1fr);gap:3px;margin:8px 0 0 32px' });
+      DOW.forEach((d, n) => {
+        const on = (f.days || []).includes(n);
+        picks.append(E('button', {
+          style: 'padding:7px 0;border-radius:2px;border:1px solid ' + (on ? 'transparent' : 'var(--rule)') +
+                 ';background:' + (on ? `hsl(${h.hue},62%,48%)` : '#fff') + ';color:' + (on ? '#fff' : 'var(--mut)') +
+                 ';font-family:var(--disp);font-size:11px;letter-spacing:.08em',
+          text: d[0], 'aria-label': d,
+          onclick: () => {
+            f.days = f.days || [];
+            const i2 = f.days.indexOf(n);
+            i2 < 0 ? f.days.push(n) : f.days.splice(i2, 1);
+            save(true); render();
+          }}));
+      });
+      row.append(picks);
+    } else if (f.kind !== 'daily') {
+      const nums = E('div', { cls: 'chips', style: 'margin:8px 0 0;padding-left:32px' });
+      const opts = f.kind === 'perMonth' ? [1, 2, 3, 4, 6, 8, 12] : f.kind === 'perWeek' ? [1, 2, 3, 4, 5, 6] : [2, 3, 4, 7, 10, 14];
+      opts.forEach(n2 => nums.append(E('button', {
+        cls: 'chip' + (f.n === n2 ? ' on' : ''),
+        style: (f.n === n2 ? 'background:var(--acc);' : '') + 'font-size:11.5px;padding:4px 10px',
+        text: f.kind === 'everyN' ? n2 + ' days' : n2 + '\u00d7',
+        onclick: () => { f.n = n2; save(true); render(); } })));
+      row.append(nums);
+    }
     row.append(goalLink(h, render));
     c.append(row);
   });
   c.append(E('button', { cls: 'btn fill', style: 'margin-top:14px', text: '+ Add habit',
-    onclick: () => { S.habits.push({ id: uid(), name: '', hue: (S.habits.length * 60) % 360 }); save(); render(); } }));
+    onclick: () => { S.habits.push({ id: uid(), name: '', hue: (S.habits.length * 60) % 360,
+      freq: { kind: 'daily' } }); save(); render(); } }));
   v.append(c);
 
   if (S.habits.length) {
@@ -3221,7 +3406,10 @@ function pageHabits() {
       const strip = E('div', { style: 'display:flex;gap:2px' });
       for (let i = 29; i >= 0; i--) {
         const dk = iso(addDays(new Date(), -i));
-        strip.append(E('div', { style: `flex:1;height:22px;border-radius:1px;background:${logged(dk, h.id) ? `hsl(${h.hue},62%,48%)` : 'var(--paper)'}` }));
+        const hit = logged(dk, h.id), asked = dueOn(h, dk);
+        strip.append(E('div', { title: dk, style: `flex:1;height:22px;border-radius:1px;background:${
+          hit ? `hsl(${h.hue},62%,48%)` : asked ? 'var(--paper)' : 'transparent'};` +
+          (!hit && asked ? 'box-shadow:inset 0 0 0 1px var(--rule);' : '') }));
       }
       row.append(strip);
       hc.append(row);
@@ -4236,7 +4424,9 @@ function toMarkdown() {
   S.habits.forEach(h => {
     const days = Object.keys(S.hlog).filter(d => S.hlog[d].includes(h.id)).sort();
     const owner = h.p ? projectById(h.p) : (h.g ? S.goals.find(x => x.id === h.g) : null);
-    out.push('- **' + (h.name || 'Habit') + '** — ' + days.length + ' days logged, current streak ' + streak(h.id) +
+    const run = streak(h.id), u = streakUnit(h);
+    out.push('- **' + (h.name || 'Habit') + '** (' + freqLabel(h) + ') — ' + days.length +
+      ' days logged, ' + habitRate(h.id, 90) + '% kept over 90 days, current run ' + run + ' ' + u + (run === 1 ? '' : 's') +
       (owner ? '. Carries ' + (owner.title || 'a goal') + '.' : ''));
   });
 
