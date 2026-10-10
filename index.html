@@ -182,7 +182,7 @@ textarea::placeholder,input::placeholder{color:var(--faint)}
 <script>
 /* ===================== core ===================== */
 const KEY = 'goaldigger2026';
-/* BUILD_STAMP */ const BUILD = '2026-10-06.0835';
+/* BUILD_STAMP */ const BUILD = '2026-10-10.1420';
 const YEAR = 2026;                       /* the year this planner began */
 const CURRENT_YEAR = new Date().getFullYear();
 const MONTHS = ['January','February','March','April','May','June','July','August','September','October','November','December'];
@@ -973,13 +973,18 @@ function buildIcs(events) {
 function datedItems() {
   const out = [];
   (S.projects || []).forEach(p => {
-    if (p.done || !p.due) return;
+    if (p.done || isPaused(p) || !p.due) return;
     out.push({ date: p.due, title: (p.title || 'Project') + ' \u2014 due', notes: p.notes });
   });
   S.goals.forEach(g => {
     if (g.completed) return;
-    if (g.due) out.push({ date: g.due, title: (g.title || 'Goal') + ' — due', notes: g.what });
-    g.milestones.forEach(m => { if (m.due && !m.d) out.push({ date: m.due, title: (m.t || 'Milestone') + ' — ' + (g.title || 'goal'), notes: '' }); });
+    if (g.due && !isPaused(g)) out.push({ date: g.due, title: (g.title || 'Goal') + ' — due', notes: g.what });
+    g.milestones.forEach(m => {
+      if (!m.due || m.d) return;
+      if (isPaused(g) && !m.watch) return;        /* paused: only what you are waiting on */
+      out.push({ date: m.due, title: (m.t || 'Milestone') + (m.watch ? ' — outcome due' : '') +
+        ' — ' + (g.title || 'goal'), notes: '' });
+    });
   });
   return out.sort((a, b) => a.date < b.date ? -1 : 1);
 }
@@ -1072,7 +1077,7 @@ function todayBrief() {
   if (hs.length) L.push('Still to do: ' + hs.map(h => h.name || 'a habit').join(', ') + '.');
   const eng = limbsEngaged(k);
   L.push(eng ? eng + ' of eight limbs met so far.' : 'No practice marked yet.');
-  const live = S.goals.filter(g => !g.completed);
+  const live = activeGoals();
   if (live.length) L.push('Goals in flight: ' + live.map(g => (g.title || 'untitled') + ' at ' + goalProgress(g) + ' per cent').join(', ') + '.');
   return L.join(' ');
 }
@@ -1164,7 +1169,7 @@ function pullGroups(y, w) {
   });
 
   const gItems = [];
-  S.goals.filter(g => !g.completed).forEach(g => {
+  activeGoals().forEach(g => {
     (g.actions || []).forEach(a => {
       if (a.d || !(a.t || '').trim()) return;
       if (!a.id) a.id = uid();
@@ -1184,7 +1189,7 @@ function candidates(y, w) {
     out.push({ text: o.t.t, from: 'day · ' + DOW[(parseIso(o.dk).getDay() + 6) % 7], src: o, kind: 'day' }));
   openTasks(null, iso(addDays(mon, -1))).slice(-12).forEach(o =>
     out.push({ text: o.t.t, from: 'left over · ' + o.dk, src: o, kind: 'day' }));
-  S.goals.filter(g => !g.completed).forEach(g => {
+  activeGoals().forEach(g => {
     (g.actions || []).forEach(a => { if (!a.d && (a.t || '').trim()) {
       if (!a.id) a.id = uid();
       out.push({ text: a.t, from: 'goal · ' + (g.title || 'untitled'), kind: 'goal', g: g.id, ga: a.id });
@@ -1236,7 +1241,7 @@ function goalLink(item, redraw) {
 
   if (linkingItem === item) {
     const panel = E('div', { style: 'width:100%;margin-top:8px;border-left:2px solid var(--rule);padding-left:10px' });
-    const projs = openProjects(), goals = S.goals.filter(x => !x.completed);
+    const projs = openProjects(), goals = activeGoals();
 
     if (projs.length) {
       panel.append(E('h3', { style: 'margin:4px 0 0', text: 'Projects' }));
@@ -2100,8 +2105,35 @@ function viewToday() {
   ])));
   v.append(stc);
 
+  /* waiting on an outcome */
+  const waiting = watchedMilestones();
+  if (waiting.length) {
+    const wtc = E('div', { cls: 'card' });
+    wtc.append(E('div', { cls: 'head' }, [E('h2', { text: 'Waiting on' }),
+      E('span', { cls: 'pct', text: waiting.length })]));
+    waiting.forEach(({ g, m }) => {
+      const n = m.due ? Math.round((parseIso(m.due) - new Date(new Date().toDateString())) / 86400000) : null;
+      wtc.append(E('div', { cls: 'list-item' }, [
+        E('button', { cls: 'box', style: 'flex:none', 'aria-label': 'Mark reached',
+          html: '<svg viewBox="0 0 12 12"><polyline points="1.5,6.5 4.5,9.5 10.5,2.5"/></svg>',
+          onclick: () => { m.d = true; m.watch = false; save(true); toast('Marked reached'); render(); } }),
+        E('button', { cls: 'txt', style: 'text-align:left', onclick: () => go('goals', null, g.id) }, [
+          E('div', { style: 'font-size:14.5px', text: m.t }),
+          E('div', { cls: 'pct', text: [
+            g.title || 'a goal',
+            isPaused(g) ? 'paused' : '',
+            m.due ? (n === null ? '' : n > 0 ? 'expected in ' + n + ' days' : n === 0 ? 'expected today' : 'expected ' + Math.abs(n) + ' days ago') : ''
+          ].filter(Boolean).join(' \u00b7 ') })
+        ])
+      ]));
+    });
+    wtc.append(E('p', { cls: 'lede', style: 'margin-top:10px',
+      text: 'Outcomes you cannot work at \u2014 tick one when the news arrives.' }));
+    v.append(wtc);
+  }
+
   /* goals in flight */
-  const live = S.goals.filter(g => !g.completed).slice(0, 4);
+  const live = activeGoals().slice(0, 4);
   const gc = E('div', { cls: 'card' });
   gc.append(E('div', { cls: 'head' }, [E('h2', { text: 'Goals in flight' }),
     E('button', { cls: 'btn ghost', text: 'All goals', onclick: () => go('goals') })]));
@@ -2151,7 +2183,7 @@ function viewWeek() {
   if (W.goals.length < 3) {
     const cands = [].concat(
       openProjects().map(p2 => ({ label: p2.title || 'Untitled project', sub: dueLabel(p2.due), p: p2.id, g: (p2.goals || [])[0] })),
-      S.goals.filter(g3 => !g3.completed).map(g3 => ({ label: g3.title || 'Untitled goal', sub: goalProgress(g3) + '%', g: g3.id })));
+      activeGoals().map(g3 => ({ label: g3.title || 'Untitled goal', sub: goalProgress(g3) + '%', g: g3.id })));
     if (cands.length) {
       c2.append(E('div', { cls: 'rule' }));
       c2.append(E('button', { cls: 'btn ghost', style: 'padding-left:0',
@@ -2463,7 +2495,7 @@ function viewMonth() {
       if (g.p === p2.id) o.setAttribute('selected', 'selected');
       msel.append(o);
     });
-    S.goals.filter(x => !x.completed).forEach(x => {
+    activeGoals().forEach(x => {
       const o = E('option', { value: 'g:' + x.id }, 'Goal \u00b7 ' + (x.title || 'Untitled'));
       if (!g.p && g.g === x.id) o.setAttribute('selected', 'selected');
       msel.append(o);
@@ -2628,6 +2660,60 @@ function viewMonth() {
 
 
 /* ===================== GOALS ===================== */
+/* ===================== pausing ===================== */
+/* A paused goal stops asking anything of you. It keeps its history, stays
+   open, and its milestones can still be marked — because outcomes arrive
+   whether or not you are working. */
+const isPaused = o => !!(o && o.paused);
+const activeGoals = () => S.goals.filter(g => !g.completed && !isPaused(g));
+const pausedGoals = () => S.goals.filter(g => !g.completed && isPaused(g));
+const pausedProjects = () => S.projects.filter(p => !p.done && isPaused(p));
+function pauseLabel(o) {
+  if (!isPaused(o)) return '';
+  const since = Math.max(0, Math.floor((new Date(new Date().toDateString()) - parseIso(o.paused)) / 86400000));
+  const bits = ['paused ' + (since < 1 ? 'today' : since < 60 ? since + ' days ago'
+    : Math.round(since / 30.4) + ' months ago')];
+  if (o.until) {
+    const left = Math.round((parseIso(o.until) - new Date()) / 86400000);
+    bits.push(left > 0 ? 'back in ' + (left < 60 ? left + ' days' : Math.round(left / 30.4) + ' months')
+      : 'due back ' + o.until);
+  }
+  return bits.join(' \u00b7 ');
+}
+function pauseControl(o, kind) {
+  const c = E('div', { cls: isPaused(o) ? 'card on' : 'card' });
+  if (!isPaused(o)) {
+    c.append(E('h2', { text: 'Pause' }));
+    c.append(E('p', { cls: 'lede', text: 'Set it down for a while. It keeps everything it has, stops appearing where work gets chosen, and asks nothing of you \u2014 but stays open, and its milestones can still be marked when news arrives.' }));
+    c.append(E('button', { cls: 'btn', text: 'Pause this ' + kind,
+      onclick: () => { o.paused = iso(new Date()); save(true); render(); } }));
+    return c;
+  }
+  c.append(E('div', { cls: 'head' }, [E('h2', { text: 'Paused' }),
+    E('span', { cls: 'pct', text: pauseLabel(o) })]));
+  c.append(field('Why', bindArea(o, 'pauseWhy', 'e.g. parental leave')));
+  c.append(field('Expect to pick it up', bindText(o, 'until', '', 'date')));
+  c.append(E('div', { cls: 'btnrow' }, [
+    E('button', { cls: 'btn fill', text: 'Pick it up again',
+      onclick: () => { delete o.paused; delete o.until; save(true); render(); } })
+  ]));
+  return c;
+}
+
+/* milestones you are waiting on rather than working toward */
+function watchedMilestones() {
+  const out = [];
+  S.goals.forEach(g => {
+    if (g.completed) return;
+    (g.milestones || []).forEach(m => {
+      if (!m.watch || m.d || !(m.t || '').trim()) return;
+      if (!m.id) m.id = uid();
+      out.push({ g, m });
+    });
+  });
+  return out.sort((a, b) => (a.m.due || '9999') < (b.m.due || '9999') ? -1 : 1);
+}
+
 function childrenOf(id) { return S.goals.filter(g => (g.parents || []).includes(id)); }
 function servedBy(g) { return (g.parents || []).map(id => S.goals.find(x => x.id === id)).filter(Boolean); }
 /* a goal cannot serve itself or anything already beneath it */
@@ -2653,16 +2739,19 @@ function viewGoals() {
   v.append(E('div', { cls: 'topbar' }, E('div', {}, [
     E('div', { cls: 'eyebrow', text: 'Strategy' }),
     E('h1', { text: 'Goals' }),
-    E('div', { cls: 'sub', text: S.goals.filter(g => !g.completed).length + ' open \u00b7 ' +
-      openProjects().length + ' project' + (openProjects().length === 1 ? '' : 's') + ' \u00b7 ' +
-      S.goals.filter(g => g.completed).length + ' achieved' })
+    E('div', { cls: 'sub', text: [
+      activeGoals().length + ' open',
+      pausedGoals().length ? pausedGoals().length + ' paused' : '',
+      openProjects().length + ' project' + (openProjects().length === 1 ? '' : 's'),
+      S.goals.filter(g => g.completed).length + ' achieved'
+    ].filter(Boolean).join(' \u00b7 ') })
   ])));
 
   const section = (title, kind, note) => {
     const c = E('div', { cls: 'card' });
     c.append(E('div', { cls: 'head' }, [E('h2', { text: title }),
       E('button', { cls: 'btn ghost', text: '+ New', onclick: () => { const g = newGoal(kind); S.goals.push(g); save(true); go('goals', null, g.id); } })]));
-    const list = S.goals.filter(g => g.kind === kind);
+    const list = S.goals.filter(g => g.kind === kind && !isPaused(g));
     if (!list.length) c.append(E('div', { cls: 'empty', text: note }));
     list.forEach(g => {
       const p = goalProgress(g);
@@ -2689,6 +2778,29 @@ function viewGoals() {
   v.append(section('Long-term goals', 'long', 'Six months and beyond. Three is plenty.'));
   v.append(section('Short-term goals', 'short', 'One to twelve weeks. These are the ones that build momentum.'));
 
+  const sleeping = pausedGoals().concat(pausedProjects().map(p => Object.assign({}, p, { _proj: true })));
+  if (sleeping.length) {
+    const pc3 = E('div', { cls: 'card' });
+    pc3.append(E('div', { cls: 'head' }, [E('h2', { text: 'Paused' }),
+      E('span', { cls: 'pct', text: sleeping.length })]));
+    pc3.append(E('p', { cls: 'lede', text: 'Set down for now. Nothing here asks anything of you \u2014 but it is all still here, and anything you are waiting on still shows on Today.' }));
+    sleeping.forEach(o => {
+      const watched = o._proj ? [] : (o.milestones || []).filter(m => m.watch && !m.d);
+      pc3.append(E('button', { style: 'display:block;width:100%;text-align:left;padding:12px 0;border-top:1px solid var(--rule);opacity:.75',
+        onclick: () => o._proj ? go('goals', 'project', o.id) : go('goals', null, o.id) }, [
+        E('div', { style: 'display:flex;justify-content:space-between;gap:10px;align-items:baseline' }, [
+          E('span', { text: o.title || 'Untitled' }),
+          E('span', { cls: 'pct', text: (o._proj ? projectProgress(o) : goalProgress(o)) + '%' })
+        ]),
+        E('div', { cls: 'pct', style: 'margin-top:3px', text: [
+          pauseLabel(o), (o.pauseWhy || '').trim().split('\n')[0],
+          watched.length ? 'waiting on ' + watched.length : ''
+        ].filter(Boolean).join(' \u00b7 ') })
+      ]));
+    });
+    v.append(pc3);
+  }
+
   v.append(projectsCard());
 
   /* the long view */
@@ -2707,9 +2819,11 @@ function viewGoals() {
           E('div', { cls: 'pct', text: y === CURRENT_YEAR ? 'now' : '+' + (y - CURRENT_YEAR) })
         ]),
         E('div', { style: 'flex:1;min-width:0' }, list.map(g => E('button', {
-          style: 'display:block;width:100%;text-align:left;padding:2px 0;font-size:14.5px',
+          style: 'display:block;width:100%;text-align:left;padding:2px 0;font-size:14.5px' + (isPaused(g) ? ';opacity:.6' : ''),
           onclick: () => go('goals', null, g.id) },
-          [g.title || 'Untitled goal', g.kind === 'range' ? E('span', { cls: 'tag acc', style: 'margin-left:7px', text: 'range' }) : null])))
+          [g.title || 'Untitled goal',
+           isPaused(g) ? E('span', { cls: 'tag', style: 'margin-left:7px', text: 'paused' }) : null,
+           g.kind === 'range' ? E('span', { cls: 'tag acc', style: 'margin-left:7px', text: 'range' }) : null])))
       ]));
     });
     lifelong.forEach(g => hc.append(E('div', { style: 'display:flex;gap:12px;padding:10px 0;border-top:1px solid var(--rule)' }, [
@@ -2753,7 +2867,8 @@ function viewGoal(id) {
 
   v.append(E('button', { cls: 'btn ghost', text: '‹ Goals', onclick: () => go('goals') }));
   v.append(E('div', { style: 'margin:6px 0 14px' }, [
-    E('div', { cls: 'eyebrow', text: (g.kind === 'range' ? 'Long-range' : long ? 'Long-term' : 'Short-term') + ' goal' }),
+    E('div', { cls: 'eyebrow', style: isPaused(g) ? 'color:var(--mut)' : '',
+      text: (isPaused(g) ? 'Paused \u00b7 ' : '') + (g.kind === 'range' ? 'Long-range' : long ? 'Long-term' : 'Short-term') + ' goal' }),
     (() => {
       const ta = E('textarea', { rows: 1, placeholder: 'Name the goal',
         style: 'font-family:var(--disp);font-size:30px;line-height:1.02;text-transform:uppercase;font-weight:700;border:0;padding:4px 0',
@@ -2786,7 +2901,7 @@ function viewGoal(id) {
   /* what this goal is in service of — any number of larger goals */
   g.parents = g.parents || [];
   const below = descendants(g.id);
-  const eligible = S.goals.filter(x => x.id !== g.id && !below.has(x.id) && !x.completed);
+  const eligible = S.goals.filter(x => x.id !== g.id && !below.has(x.id) && !x.completed && !isPaused(x));
   if (eligible.length) {
     const box = E('div');
     eligible.forEach(x => {
@@ -2846,6 +2961,10 @@ function viewGoal(id) {
       E('span', { cls: 'eyebrow', text: 'By' }),
       E('div', { style: 'flex:1' }, bindText(m, 'due', '', 'date'))
     ]));
+    blk.append(E('button', { cls: 'tag' + (m.watch ? ' acc' : ''),
+      style: 'margin:6px 0 0 29px' + (m.watch ? '' : ';border-style:dashed;color:var(--faint)'),
+      text: m.watch ? 'waiting on an outcome' : '+ waiting on an outcome',
+      onclick: () => { m.watch = !m.watch; if (m.watch && !m.id) m.id = uid(); save(true); render(); } }));
     const msWritten = m.id ? writingAbout(g.id, m.id) : [];
     if (msWritten.length) blk.append(E('div', { cls: 'pct', style: 'padding-left:29px',
       text: msWritten.length + ' note' + (msWritten.length === 1 ? '' : 's') + ' against this \u00b7 ' +
@@ -2993,6 +3112,8 @@ function viewGoal(id) {
     v.append(tc2);
   }
 
+  v.append(pauseControl(g, 'goal'));
+
   /* references */
   g.links = g.links || [];
   const lc = E('div', { cls: 'card' });
@@ -3035,7 +3156,7 @@ const newProject = () => ({ id: uid(), title: '', due: '', goals: [], notes: '',
   tasks: [], costs: [], budget: '', done: '', created: iso(new Date()) });
 
 const projectById = id => S.projects.find(p => p.id === id);
-const openProjects = () => S.projects.filter(p => !p.done);
+const openProjects = () => S.projects.filter(p => !p.done && !isPaused(p));
 
 /* scheduled work pointing at this project */
 function tasksForProject(id) {
@@ -3116,7 +3237,7 @@ function projectsCard() {
         E('span', { cls: 'pct', style: late ? 'color:#B23A3A' : '', text: p.done ? 'Done' : pct + '%' })
       ]),
       E('div', { cls: 'pct', style: 'margin-top:3px' + (late ? ';color:#B23A3A' : ''), text: [
-        p.done ? 'finished ' + p.done : dueLabel(p.due),
+        p.done ? 'finished ' + p.done : isPaused(p) ? pauseLabel(p) : dueLabel(p.due),
         (p.goals || []).length ? 'serves ' + p.goals.map(id => (S.goals.find(g => g.id === id) || {}).title || 'a goal').join(', ') : ''
       ].filter(Boolean).join(' \u00b7 ') }),
       E('div', { cls: 'bar' }, E('i', { style: 'width:' + (p.done ? 100 : pct) + '%' + (late ? ';background:#B23A3A' : '') }))
@@ -3149,7 +3270,7 @@ function viewProject(id) {
   dc.append(field('Finish by', bindText(p, 'due', '', 'date')));
   dc.append(field('What it is', areaWithLinks(p, 'notes', 'Scope, constraints, who else is involved.', 1, S.links)));
   const gl = E('div');
-  const goalsOpen = S.goals.filter(g => !g.completed);
+  const goalsOpen = activeGoals();
   if (!goalsOpen.length) gl.append(E('div', { cls: 'empty', text: 'No open goals to serve yet.' }));
   goalsOpen.forEach(g => {
     const on = (p.goals || []).includes(g.id);
@@ -3225,6 +3346,8 @@ function viewProject(id) {
     ])));
     v.append(hc);
   }
+
+  v.append(pauseControl(p, 'project'));
 
   const fc = E('div', { cls: 'card' });
   if (!p.done) {
@@ -4402,7 +4525,14 @@ function toMarkdown() {
   yearsPresent().forEach(Y => { exportYear(Y, out, put, putList); });
   out.push('\n## Goals\n');
   S.goals.forEach(g => {
-    out.push('\n### ' + (g.title || 'Untitled') + ' (' + g.kind + '-term, ' + goalProgress(g) + '%)\n');
+    out.push('\n### ' + (g.title || 'Untitled') + ' (' + g.kind + '-term, ' + goalProgress(g) + '%' +
+      (isPaused(g) ? ', paused' : '') + ')\n');
+    if (isPaused(g)) {
+      put('Paused since', g.paused + ((g.pauseWhy || '').trim() ? ' \u2014 ' + g.pauseWhy.trim() : ''));
+      if (g.until) put('Expected back', g.until);
+    }
+    const wmg = (g.milestones || []).filter(m => m.watch && !m.d);
+    if (wmg.length) out.push('**Waiting on**\n' + wmg.map(m => '- ' + m.t + (m.due ? ' (expected ' + m.due + ')' : '')).join('\n') + '\n');
     put('What', g.what); put('Why', g.why); put('How', g.how);
     put('When', g.when); put('Feeling I am chasing', g.feeling); put('Reward', g.reward);
     if (g.milestones.length) {
@@ -4436,6 +4566,7 @@ function toMarkdown() {
       out.push('\n### ' + (p2.title || 'Untitled project') + '\n');
       put('Finish by', p2.due);
       if (p2.done) put('Finished', p2.done);
+      if (isPaused(p2)) put('Paused since', p2.paused + ((p2.pauseWhy || '').trim() ? ' \u2014 ' + p2.pauseWhy.trim() : ''));
       put('Progress', projectProgress(p2) + '%');
       if ((p2.goals || []).length) put('In service of',
         p2.goals.map(id => (S.goals.find(g => g.id === id) || {}).title || 'a goal').join(', '));
@@ -4759,22 +4890,57 @@ function limbSpectrum(k, h) {
 }
 
 function viewPractice() {
-  const v = E('div'), k = iso(new Date()), e = limbDay(k);
+  const v = E('div'), k = R.day, d = parseIso(k), e = limbDay(k);
+  const isNow = sameDay(d, new Date());
   const engaged = limbsEngaged(k), st = limbStreak();
+  const step = n => { R.day = iso(addDays(d, n)); window.scrollTo(0, 0); render(); };
 
-  v.append(E('div', { cls: 'topbar' }, E('div', {}, [
-    E('div', { cls: 'eyebrow', text: 'Aṣṭāṅga · the eight limbs' }),
-    E('h1', { text: 'Practice' }),
-    E('div', { cls: 'sub', style: 'color:var(--mut)', text: st ? st + ' day' + (st === 1 ? '' : 's') + ' unbroken' : 'Begin where you are' })
-  ])));
+  v.append(E('div', { cls: 'nav' }, [
+    E('button', { text: '\u2039', 'aria-label': 'Previous day', onclick: () => step(-1) }),
+    E('div', { cls: 'mid' }, [
+      E('div', { cls: 'eyebrow', text: 'A\u1e63\u1e6d\u0101\u1e45ga \u00b7 the eight limbs' }),
+      E('h1', { style: 'font-size:28px', text: isNow ? 'Practice' : DOW[(d.getDay() + 6) % 7] + ' ' + d.getDate() + ' ' + MONTHS[d.getMonth()] }),
+      isNow
+        ? E('div', { cls: 'sub', style: 'color:var(--mut)', text: st ? st + ' day' + (st === 1 ? '' : 's') + ' unbroken' : 'Begin where you are' })
+        : E('button', {
+            style: 'display:block;width:100%;padding:1px 0;white-space:nowrap;color:var(--acc);' +
+                   'font-family:var(--disp);font-size:11px;font-weight:600;letter-spacing:.16em;text-transform:uppercase',
+            text: '\u2190 Back to today', onclick: () => { R.day = iso(new Date()); render(); } })
+    ]),
+    E('button', { text: '\u203a', 'aria-label': 'Next day', onclick: () => step(1) })
+  ]));
 
   const sc = E('div', { cls: 'card' });
   sc.append(limbSpectrum(k, 30));
+  const when = isNow ? 'today' : 'that day';
   sc.append(E('p', { cls: 'lede', style: 'margin:12px 0 0', text:
-    engaged === 0 ? 'Eight limbs, outer to inner. Meeting any one — well or badly — begins the day.'
-    : engaged === 8 ? 'All eight limbs met today. The full spectrum, recomposed.'
-    : engaged + ' of 8 limbs met today. Faded bands are the ones that slipped, and noticing is svadhyaya — it counts.' }));
+    engaged === 0 ? (isNow ? 'Eight limbs, outer to inner. Meeting any one \u2014 well or badly \u2014 begins the day.'
+                           : 'Nothing marked for this day yet. Step back through the week and fill in what you remember.')
+    : engaged === 8 ? 'All eight limbs met ' + when + '. The full spectrum, recomposed.'
+    : engaged + ' of 8 limbs met ' + when + '. Faded bands are the ones that slipped, and noticing is svadhyaya \u2014 it counts.' }));
   v.append(sc);
+
+  /* the week at a glance, so a gap is obvious and one tap away */
+  const wkk = isoWeek(d), mon = mondayOf(wkk.y, wkk.w);
+  const strip = E('div', { cls: 'card' });
+  strip.append(E('h3', { text: 'This week' }));
+  const row = E('div', { style: 'display:grid;grid-template-columns:repeat(7,1fr);gap:4px' });
+  for (let i = 0; i < 7; i++) {
+    const dt = addDays(mon, i), dk = iso(dt);
+    const n = limbsEngaged(dk), here = dk === k, future = dt > new Date();
+    row.append(E('button', {
+      style: 'padding:6px 0 7px;border:1px solid ' + (here ? 'var(--acc)' : 'var(--rule)') +
+             ';border-radius:2px;background:' + (here ? 'var(--wash)' : '#fff') +
+             ';display:flex;flex-direction:column;align-items:center;gap:3px' + (future ? ';opacity:.4' : ''),
+      'aria-label': dk, onclick: () => { R.day = dk; render(); }
+    }, [
+      E('span', { cls: 'eyebrow', style: 'font-size:9px', text: DOW[i][0] }),
+      E('span', { cls: 'mono', style: 'font-size:12px' + (here ? ';color:var(--acc);font-weight:700' : ''), text: dt.getDate() }),
+      E('div', { style: 'width:100%;padding:0 3px' }, limbSpectrum(dk, 6))
+    ]));
+  }
+  strip.append(row);
+  v.append(strip);
 
   LIMBS.forEach(l => {
     const state = limbState(l, e.marks);
@@ -4816,9 +4982,9 @@ function viewPractice() {
     v.append(c);
   });
 
-  /* 30 days */
+  /* 30 days, ending on the day in view */
   const hc = E('div', { cls: 'card' });
-  hc.append(E('h2', { text: 'Last 30 days' }));
+  hc.append(E('h2', { text: isNow ? 'Last 30 days' : '30 days to ' + k }));
   const tbl = E('table', { cls: 'hgrid' });
   const body = E('tbody');
   LIMBS.forEach(l => {
@@ -4829,9 +4995,11 @@ function viewPractice() {
     const cell = E('td', { colspan: 8 });
     const strip = E('div', { style: 'display:flex;gap:1px' });
     for (let i = 29; i >= 0; i--) {
-      const dk = iso(addDays(new Date(), -i));
+      const dk = iso(addDays(d, -i));
       const stt = limbState(l, (S.limbs.days[dk] || {}).marks || {});
-      strip.append(E('div', { style: `flex:1;height:16px;border-radius:1px;background:${l.hue};opacity:${stt === 'up' ? 1 : stt === 'slip' ? .3 : .08}` }));
+      strip.append(E('div', { title: dk, style: `flex:1;height:16px;border-radius:1px;background:${l.hue};` +
+        `opacity:${stt === 'up' ? 1 : stt === 'slip' ? .3 : .08};` +
+        (dk === k ? 'box-shadow:inset 0 0 0 1px var(--ink);' : '') }));
     }
     cell.append(strip);
     tr.append(cell);
@@ -6228,7 +6396,7 @@ function anchorOptions() {
     v: 'p:' + p.id, t: l.sanskrit + ' · ' + p.name.replace(/ ·.*$/, '')
   })));
   groups.push(pr);
-  const open = S.goals.filter(g => !g.completed);
+  const open = activeGoals();
   if (open.length) {
     groups.push({ label: 'Goals', items: open.map(g => ({ v: 'g:' + g.id, t: g.title || 'Untitled goal' })) });
     const ms = [];
