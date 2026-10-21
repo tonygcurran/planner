@@ -182,7 +182,7 @@ textarea::placeholder,input::placeholder{color:var(--faint)}
 <script>
 /* ===================== core ===================== */
 const KEY = 'goaldigger2026';
-/* BUILD_STAMP */ const BUILD = '2026-10-21.1045';
+/* BUILD_STAMP */ const BUILD = '2026-10-21.1230';
 const YEAR = 2026;                       /* the year this planner began */
 const CURRENT_YEAR = new Date().getFullYear();
 const MONTHS = ['January','February','March','April','May','June','July','August','September','October','November','December'];
@@ -1790,6 +1790,26 @@ function viewToday() {
     ]),
     E('button', { text: '\u203A', 'aria-label': 'Next day', onclick: () => step(1) })
   ]));
+
+  /* ---------- a summary is due ---------- */
+  if (isNow && summaryDue() && !summaryHushed) {
+    const sb = E('div', { cls: 'card' });
+    sb.append(E('div', { cls: 'head' }, [
+      E('h2', { text: 'Summary due' }),
+      E('button', { cls: 'x', text: '\u00d7', 'aria-label': 'Not now',
+        onclick: () => { summaryHushed = true; render(); } })]));
+    sb.append(E('p', { cls: 'lede', text: (S.meta.lastSummary
+      ? 'The last one went out ' + Math.round((new Date() - parseIso(S.meta.lastSummary)) / 86400000) + ' days ago. '
+      : 'None has gone out yet. ') + 'Sending one keeps Siri answering from this week rather than last month.' }));
+    sb.append(E('div', { cls: 'btnrow', style: 'margin-top:8px' }, [
+      E('button', { cls: 'btn fill', text: 'Send to Notes',
+        onclick: () => { sendSummaryToNotes(); setTimeout(render, 400); } }),
+      E('button', { cls: 'btn', text: 'Send to iCloud',
+        onclick: () => { sendSummaryToFile(); setTimeout(render, 400); } })
+    ]));
+    v.append(sb);
+  }
+
 
   const ic = E('div', { cls: 'card on' });
   ic.append(E('label', { cls: 'fl', text: isNow ? "Today's intention" : 'Intention for this day' }));
@@ -3837,7 +3857,10 @@ function pageData() {
           let data = JSON.parse(r.result);
           if (!confirm('Replace everything in this planner with the backup?')) return;
           data = await restorePlates(data);
-          S = migrate(Object.assign(DEFAULT(), data)); save(true); go('today');
+          const keepToken = S.cfg.token || '';
+          S = migrate(Object.assign(DEFAULT(), data));
+          if (!S.cfg.token) S.cfg.token = keepToken;   /* backups no longer carry it */
+          save(true); go('today');
         } catch (err) { alert('That file could not be read as a backup.'); }
       };
       r.readAsText(f);
@@ -3846,10 +3869,131 @@ function pageData() {
   c.append(E('button', { cls: 'btn', style: 'margin-top:10px', text: 'Restore from backup', onclick: () => file.click() }));
   v.append(c);
 
-  /* ---------- the vault ---------- */
+  /* ---------- the summary, for Siri ---------- */
+  const sc = E('div', { cls: 'card' });
+  sc.append(E('h2', { text: 'Summary for Siri' }));
+  sc.append(E('p', { cls: 'lede', text: 'A short plain-English account of where things stand — what you have done, what is overdue, what you are waiting on — written as sentences rather than figures, because that is what Apple’s index can actually read. It goes into a note called Planner Summary, and replaces the one before it.' }));
+
+  const W = summaryWindow();
+  sc.append(E('div', { cls: 'pct', style: 'margin-top:8px', text: W.since
+    ? 'The next one covers everything since ' + longDate(W.since) + ' — ' + W.days + ' day' + (W.days === 1 ? '' : 's') + '.'
+    : 'No summary has gone out yet, so the first one covers the last 30 days.' }));
+
+  sc.append(E('div', { cls: 'btnrow', style: 'margin-top:10px' }, [
+    E('button', { cls: 'btn fill', text: 'Send to Notes', onclick: () => { sendSummaryToNotes(); setTimeout(render, 400); } }),
+    E('button', { cls: 'btn', text: 'Send to iCloud', onclick: () => { sendSummaryToFile(); setTimeout(render, 400); } }),
+    E('button', { cls: 'btn', text: 'Copy instead', onclick: () => copySummary().then(render) })
+  ]));
+
+  /* see it before sending it */
+  if (!peekSummary) {
+    sc.append(E('button', { cls: 'btn ghost', style: 'padding-left:0;font-size:12px',
+      text: 'Read it first', onclick: () => { peekSummary = true; render(); } }));
+  } else {
+    sc.append(E('pre', { style: 'white-space:pre-wrap;font-size:12px;line-height:1.5;margin:10px 0 0;padding:12px;background:var(--sunk,rgba(128,128,128,.08));border-radius:10px;max-height:340px;overflow:auto',
+      text: vaultSummary() }));
+    sc.append(E('button', { cls: 'btn ghost', style: 'padding-left:0;font-size:12px',
+      text: 'Hide', onclick: () => { peekSummary = false; render(); } }));
+  }
+
+  /* the shortcut it calls */
+  const snRow = E('div', { style: 'margin-top:12px;padding-top:10px;border-top:1px solid var(--rule)' });
+  snRow.append(E('div', { cls: 'pct', text: 'Shortcut name' }));
+  snRow.append(E('input', { type: 'text', placeholder: 'Planner Summary',
+    value: S.cfg.noteShortcut || '',
+    oninput: e => { S.cfg.noteShortcut = e.target.value; save(); } }));
+  sc.append(snRow);
+
+  const fnRow = E('div', { style: 'margin-top:10px' });
+  fnRow.append(E('div', { cls: 'pct', text: 'Shortcut that writes the iCloud file' }));
+  fnRow.append(E('input', { type: 'text', placeholder: 'Save Planner File',
+    value: S.cfg.fileShortcut || '',
+    oninput: e => { S.cfg.fileShortcut = e.target.value; save(); } }));
+  sc.append(fnRow);
+
+  const evRow = E('div', { style: 'margin-top:12px;padding-top:10px;border-top:1px solid var(--rule)' });
+  evRow.append(E('div', { cls: 'pct', text: 'Remind me to send one' }));
+  const evChips = E('div', { cls: 'chips', style: 'margin-top:6px' });
+  [[0, 'Never'], [1, 'Daily'], [7, 'Weekly'], [14, 'Fortnightly'], [30, 'Monthly']].forEach(([n, label]) => {
+    evChips.append(E('button', { cls: 'chip' + (summaryEvery() === n ? ' on' : ''),
+      style: summaryEvery() === n ? 'background:var(--acc);' : '',
+      text: label, onclick: () => { S.cfg.summaryEvery = n; save(); render(); } }));
+  });
+  evRow.append(evChips);
+  evRow.append(E('p', { cls: 'lede', style: 'margin-top:6px', text: 'A web page cannot wake itself up, so this is a nudge on the Today screen when one falls due rather than something that happens while the phone is in your pocket. For properly unattended, see below.' }));
+  sc.append(evRow);
+
+  /* refresh the cloud summary on the way out */
+  if (S.cfg.token && S.cfg.gist) {
+    if (S.cfg.summaryPush === undefined) S.cfg.summaryPush = true;
+    sc.append(E('div', { style: 'display:flex;gap:11px;align-items:flex-start;padding:10px 0;border-top:1px solid var(--rule)' }, [
+      E('button', { cls: 'box' + (S.cfg.summaryPush !== false ? ' on' : ''),
+        html: '<svg viewBox="0 0 12 12"><polyline points="1.5,6.5 4.5,9.5 10.5,2.5"/></svg>',
+        onclick: () => { S.cfg.summaryPush = S.cfg.summaryPush === false; save(); render(); } }),
+      E('div', { style: 'flex:1' }, [
+        E('div', { style: 'font-size:14.5px', text: 'Refresh the cloud summary as I leave' }),
+        E('p', { cls: 'lede', style: 'margin:2px 0 0', text: 'Every time you put the planner away it sends the summary alone \u2014 a small enough request to survive the app closing, which the full sync often does not. That is what keeps a scheduled automation reading something current.' })])
+    ]));
+    if (S.meta.lastSummaryPush) sc.append(E('div', { cls: 'pct',
+      text: 'Cloud summary last refreshed ' + S.meta.lastSummaryPush.slice(0, 16).replace('T', ' ') }));
+  }
+
+  if (!showNoteHelp) {
+    sc.append(E('button', { cls: 'btn ghost', style: 'padding-left:0;font-size:12px',
+      text: 'How to build that shortcut', onclick: () => { showNoteHelp = true; render(); } }));
+  } else {
+    const hb = E('div', { style: 'margin-top:8px' });
+    hb.append(E('p', { cls: 'lede', text: 'In Shortcuts, make a new shortcut called Planner Summary with three actions:' }));
+    [['1. Find Notes', 'where Name is “Planner Summary”'],
+     ['2. Delete Notes', 'pass it the found notes, and turn on Allow Deleting Without Confirmation — otherwise it stops and asks every time'],
+     ['3. Create Note', 'body set to Shortcut Input, title left to the first line']]
+      .forEach(([a, b]) => {
+        hb.append(E('div', { style: 'padding:6px 0;border-top:1px solid var(--rule)' }, [
+          E('div', { style: 'font-size:13.5px', text: a }),
+          E('p', { cls: 'lede', style: 'margin:2px 0 0', text: b })]));
+      });
+    hb.append(E('p', { cls: 'lede', style: 'margin-top:10px', text: 'On iOS 27 you can skip all that and describe it instead: “Delete any note called Planner Summary, then make a new note from the text passed in.”' }));
+    hb.append(E('p', { cls: 'lede', text: 'Then ask Siri things like “what does my planner summary say about this week” or “what am I waiting on”.' }));
+
+    hb.append(E('h2', { style: 'margin-top:16px', text: 'The iCloud file' }));
+    hb.append(E('p', { cls: 'lede', text: 'A second shortcut, Save Planner File, writes the summary into iCloud Drive with no zip and no save sheet. Two actions:' }));
+    [['1. Get Dictionary from Input', 'the planner sends a small dictionary holding a name and the text'],
+     ['2. Save File', 'content set to the Text value, destination a folder in iCloud Drive, Ask Where To Save off and Overwrite If File Exists on']]
+      .forEach(([a, b]) => {
+        hb.append(E('div', { style: 'padding:6px 0;border-top:1px solid var(--rule)' }, [
+          E('div', { style: 'font-size:13.5px', text: a }),
+          E('p', { cls: 'lede', style: 'margin:2px 0 0', text: b })]));
+      });
+
+    hb.append(E('h2', { style: 'margin-top:16px', text: 'Without touching it at all' }));
+    hb.append(E('p', { cls: 'lede', text: S.cfg.gist
+      ? 'Your cloud copy already carries the summary as a file called summary, rewritten every time this planner syncs. So a Shortcuts automation can fetch it on a schedule with the planner shut: a Time of Day automation, Get Contents of URL for the address below with an Authorization header reading Bearer and your token, Get Dictionary Value for files.summary.content, then Create Note. That runs whether or not you open anything.'
+      : 'Turn on cloud sync first and the summary will ride along in the cloud copy. A Shortcuts automation can then fetch it on a schedule with the planner shut, which is the only genuinely unattended route.' }));
+    if (S.cfg.gist) {
+      hb.append(E('div', { cls: 'pct', style: 'word-break:break-all;margin-top:4px',
+        text: 'https://api.github.com/gists/' + S.cfg.gist }));
+      hb.append(E('button', { cls: 'btn ghost', style: 'padding-left:0;font-size:12px',
+        text: 'Copy that address', onclick: () => {
+          navigator.clipboard.writeText('https://api.github.com/gists/' + S.cfg.gist)
+            .then(() => toast('Copied')).catch(() => toast('Could not copy')); } }));
+    }
+    hb.append(E('p', { cls: 'lede', style: 'margin-top:8px', text: 'The catch worth knowing: the cloud copy only refreshes when the planner is opened and then put away, so an automation reads whatever the last visit left behind. Fine for a weekly look; it will not know about anything written since.' }));
+    hb.append(E('button', { cls: 'btn ghost', style: 'padding-left:0;font-size:12px',
+      text: 'Hide', onclick: () => { showNoteHelp = false; render(); } }));
+    sc.append(hb);
+  }
+
+  if (S.meta.lastSummary) {
+    const sAge = Math.round((new Date() - parseIso(S.meta.lastSummary)) / 86400000);
+    sc.append(E('div', { cls: 'pct', style: 'margin-top:10px',
+      text: 'Last sent ' + (sAge === 0 ? 'today' : sAge + ' day' + (sAge === 1 ? '' : 's') + ' ago') }));
+  }
+  v.append(sc);
+
+  /* ---------- the whole folder ---------- */
   const vc = E('div', { cls: 'card' });
-  vc.append(E('h2', { text: 'Write a vault' }));
-  vc.append(E('p', { cls: 'lede', text: 'Everything here as ordinary files — your writing as Markdown, the countable things as CSV, the plates at full size — in a folder you can keep in iCloud and open in anything. There is a Summary.md at the top written in plain sentences, which is the one Siri can read.' }));
+  vc.append(E('h2', { text: 'Write the whole folder' }));
+  vc.append(E('p', { cls: 'lede', text: 'Everything here as ordinary files — your writing as Markdown, the countable things as CSV, the plates at full size. Worth doing now and then as a readable archive, and it is the only way the photographs get out of the app and into iCloud at full size.' }));
 
   if (S.cfg.vaultPhotos === undefined) S.cfg.vaultPhotos = true;
   vc.append(E('div', { style: 'display:flex;gap:11px;align-items:flex-start;padding:10px 0;border-top:1px solid var(--rule)' }, [
@@ -3858,7 +4002,7 @@ function pageData() {
       onclick: () => { S.cfg.vaultPhotos = !S.cfg.vaultPhotos; vaultReady = null; save(); render(); } }),
     E('div', { style: 'flex:1' }, [
       E('div', { style: 'font-size:14.5px', text: 'Include the plates' }),
-      E('p', { cls: 'lede', style: 'margin:2px 0 0', text: 'Full-size images, out of deep storage and into real files. Much the biggest part of the folder — turn it off for a quick text-only copy.' })])
+      E('p', { cls: 'lede', style: 'margin:2px 0 0', text: 'Full-size images as real files. Much the biggest part of the folder — turn it off for a quick text-only copy.' })])
   ]));
 
   const vStat = E('div', { cls: 'pct', style: 'margin-top:10px',
@@ -3885,7 +4029,7 @@ function pageData() {
     try {
       const r = await shareVaultZip(vaultReady);
       if (r === 'cancelled') { vStat.textContent = 'Cancelled · still ready'; return; }
-      S.meta.lastVault = iso(new Date()); save(true);
+      S.meta.lastVault = iso(new Date()); stampSummary();
       vaultReady = null;
       render();
       toast(r === 'shared' ? 'Choose Save to Files' : 'Downloaded');
@@ -3893,7 +4037,7 @@ function pageData() {
   };
 
   if (!vaultReady) {
-    vrow.append(E('button', { cls: 'btn fill', text: 'Gather the vault', onclick: gather }));
+    vrow.append(E('button', { cls: 'btn fill', text: 'Gather the folder', onclick: gather }));
   } else {
     vrow.append(E('button', { cls: 'btn fill', text: 'Save to Files', onclick: saveZip }));
     vrow.append(E('button', { cls: 'btn', text: 'Start again',
@@ -3903,10 +4047,10 @@ function pageData() {
     vStat.textContent = 'Gathering…';
     try {
       const n = await writeVaultToFolder(await buildVault(S.cfg.vaultPhotos), true);
-      S.meta.lastVault = iso(new Date()); save(true);
+      S.meta.lastVault = iso(new Date()); stampSummary();
       vaultReady = null;
       vStat.textContent = 'Wrote ' + n + ' files to the folder';
-      toast('Vault written');
+      toast('Folder written');
     } catch (err) {
       if (err && err.name === 'AbortError') { vStat.textContent = 'Cancelled'; return; }
       vStat.textContent = 'Could not write it: ' + err.message;
@@ -3916,8 +4060,8 @@ function pageData() {
   vc.append(vStat);
 
   vc.append(E('p', { cls: 'lede', style: 'margin-top:10px', text: canWriteFolder()
-    ? 'This browser can write the folder directly — point it at iCloud Drive once and it will remember. On the iPhone it arrives as a zip instead: Save to Files, then tap the zip to unzip it in place.'
-    : 'Safari cannot be handed a folder to write into, so this arrives as a single zip. Tap Save to Files, put it in iCloud Drive, then tap the zip there to unzip it in place. Obsidian can open that folder as a vault.' }));
+    ? 'This browser can write the folder directly — point it at iCloud Drive once and it will remember. On the iPhone it arrives as a zip: Save to Files, then open the Files app itself and tap the zip there to unzip it.'
+    : 'Safari cannot be handed a folder to write into, so this arrives as a single zip. Tap Save to Files and put it in iCloud Drive — then open the Files app itself and tap the zip there. Previewing it anywhere else just shows the raw bytes.' }));
 
   if (S.meta.lastVault) {
     const vAge = Math.round((new Date() - parseIso(S.meta.lastVault)) / 86400000);
@@ -4358,7 +4502,9 @@ function finance() {
 const num = v => { const n = parseFloat(String(v || '').replace(/[^0-9.\-]/g, '')); return isFinite(n) ? n : 0; };
 const money = n => (n < 0 ? '\u2212' : '') + Math.abs(Math.round(n)).toLocaleString();
 const sumOf = arr => arr.reduce((a, x) => a + num(x.v), 0);
-const monthlyOf = (arr, kind) => arr.filter(x => x.k === kind)
+/* a month may be named; without one it answers for the month we are in */
+const monthlyOf = (arr, kind, mk) => (arr || [])
+  .filter(x => x.k === kind && flowActive(x, mk || thisMonth()))
   .reduce((a, x) => a + num(x.v) * freqMul(x.f), 0);
 
 /* one editable line: a name, an amount, optionally a frequency */
@@ -4386,6 +4532,31 @@ function moneyRow(arr, i, redraw, withFreq) {
       style: (x.f === k ? 'background:var(--acc);' : '') + 'font-size:11px;padding:4px 9px',
       text: label, onclick: () => { x.f = k; save(); redraw(); } })));
     row.append(chips);
+
+    /* when it runs. Blank at either end means it always has, or still does. */
+    const span = E('div', { style: 'display:flex;gap:6px;align-items:center;flex-wrap:wrap;margin-top:6px' });
+    span.append(E('span', { cls: 'pct', text: 'from' }));
+    span.append(monthPicker(x.from || '', mk => { x.from = mk; save(); redraw(); }, 'the start'));
+    span.append(E('span', { cls: 'pct', text: 'until' }));
+    span.append(monthPicker(x.to || '', mk => { x.to = mk; save(); redraw(); }, 'further notice'));
+    row.append(span);
+
+    /* a rise or a new rate: close this line last month, carry on in a new one */
+    if (!x.to || x.to >= viewedMonth()) {
+      span.append(E('button', { cls: 'btn ghost', style: 'padding:0 0 0 2px;font-size:11px',
+        text: 'Changed from ' + monthName(viewedMonth()),
+        onclick: () => {
+          if (viewedMonth() <= (x.from || '')) { toast('Pick a later month first'); return; }
+          splitFlow(arr, i, viewedMonth()); save(true); redraw();
+        } }));
+    }
+
+    if (!flowActive(x, viewedMonth())) {
+      row.style.opacity = '.45';
+      row.append(E('div', { cls: 'pct', text: x.to && viewedMonth() > x.to
+        ? 'Finished ' + monthName(x.to)
+        : 'Starts ' + monthName(x.from) }));
+    }
   }
   return row;
 }
@@ -4393,12 +4564,26 @@ function moneyRow(arr, i, redraw, withFreq) {
 function budgetSections(v) {
   const F = finance();
 
-  /* ---- what comes in and goes out ---- */
-  const inM = monthlyOf(F.flows, 'in'), outM = monthlyOf(F.flows, 'out');
+  /* ---- what comes in and goes out, in the month being looked at ---- */
+  const mk = viewedMonth();
+  const inM = monthlyOf(F.flows, 'in', mk), outM = monthlyOf(F.flows, 'out', mk);
   const surplus = inM - outM;
 
   const fc = E('div', { cls: 'card on' });
-  fc.append(E('h2', { text: 'Every month' }));
+  fc.append(E('div', { cls: 'nav', style: 'margin:0 0 12px' }, [
+    E('button', { text: '\u2039', 'aria-label': 'Previous month',
+      onclick: () => { budgetMonth = monthStep(mk, -1); render(); } }),
+    E('div', { cls: 'mid' }, [
+      E('h2', { style: 'margin:0', text: monthName(mk) }),
+      mk === thisMonth()
+        ? E('div', { cls: 'sub', text: 'this month' })
+        : E('button', { style: 'display:block;width:100%;padding:1px 0;color:var(--acc);' +
+            'font-family:var(--disp);font-size:11px;font-weight:600;letter-spacing:.16em;text-transform:uppercase',
+            text: '\u2190 This month', onclick: () => { budgetMonth = null; render(); } })
+    ]),
+    E('button', { text: '\u203A', 'aria-label': 'Next month',
+      onclick: () => { budgetMonth = monthStep(mk, 1); render(); } })
+  ]));
   fc.append(E('div', { style: 'display:grid;grid-template-columns:repeat(3,1fr);gap:10px' }, [
     E('div', { cls: 'stat' }, [E('b', { text: money(inM) }), E('span', { text: 'In' })]),
     E('div', { cls: 'stat' }, [E('b', { text: money(outM) }), E('span', { text: 'Out' })]),
@@ -4422,15 +4607,53 @@ function budgetSections(v) {
     const rows = F.flows.map((x, i) => [x, i]).filter(([x]) => x.k === kind);
     if (!rows.length) box.append(E('div', { cls: 'empty', text: hint }));
     rows.forEach(([, i]) => box.append(moneyRow(F.flows, i, render, true)));
-    const sub = monthlyOf(F.flows, kind);
+    const sub = monthlyOf(F.flows, kind, mk);
     if (rows.length) box.append(E('div', { cls: 'pct', style: 'text-align:right;padding-top:7px',
-      text: money(sub) + ' a month' }));
+      text: money(sub) + ' in ' + monthName(mk) }));
     box.append(E('button', { cls: 'btn ghost', style: 'margin-top:8px', text: '+ Add',
-      onclick: () => { F.flows.push({ id: uid(), n: '', v: '', f: 'm', k: kind }); save(); render(); } }));
+      onclick: () => { F.flows.push({ id: uid(), n: '', v: '', f: 'm', k: kind,
+        from: mk === thisMonth() ? '' : mk, to: '' }); save(); render(); } }));
     fc.append(box);
   });
   v.append(fc);
 
+  /* ---- the year, so a cost that started in March does not look like
+     twelve months of it ---- */
+  const yr = Number(mk.slice(0, 4));
+  const rows = yearFlow(yr);
+  const yearIn = rows.reduce((a, r) => a + r.in, 0);
+  const yearOut = rows.reduce((a, r) => a + r.out, 0);
+  const varies = rows.some(r => Math.round(r.in) !== Math.round(rows[0].in) ||
+                                Math.round(r.out) !== Math.round(rows[0].out));
+  const yc = E('div', { cls: 'card' });
+  yc.append(E('div', { cls: 'head' }, [E('h2', { text: 'Across ' + yr }),
+    E('span', { cls: 'pct', text: varies ? 'month by month' : 'flat all year' })]));
+  yc.append(E('div', { style: 'display:grid;grid-template-columns:repeat(3,1fr);gap:10px' }, [
+    E('div', { cls: 'stat' }, [E('b', { text: money(yearIn) }), E('span', { text: 'In' })]),
+    E('div', { cls: 'stat' }, [E('b', { text: money(yearOut) }), E('span', { text: 'Out' })]),
+    E('div', { cls: 'stat' }, [E('b', { style: 'color:' + (yearIn - yearOut < 0 ? '#B23A3A' : 'var(--acc)'),
+      text: money(yearIn - yearOut) }), E('span', { text: yearIn - yearOut < 0 ? 'Short' : 'Left over' })])
+  ]));
+
+  const peak = Math.max(1, ...rows.map(r => Math.max(r.in, r.out)));
+  const strip = E('div', { style: 'display:flex;gap:3px;align-items:flex-end;margin-top:14px;height:64px' });
+  rows.forEach(r => {
+    const col = E('button', { style: 'flex:1;display:flex;flex-direction:column;justify-content:flex-end;' +
+      'gap:1px;height:100%;padding:0;background:none;border:0;' +
+      (r.mk === mk ? 'outline:1px solid var(--acc);outline-offset:2px;border-radius:3px;' : ''),
+      'aria-label': monthName(r.mk),
+      onclick: () => { budgetMonth = r.mk; render(); } });
+    col.append(E('div', { style: 'height:' + Math.round(r.in / peak * 46) + 'px;background:var(--acc);opacity:.75;border-radius:2px 2px 0 0' }));
+    col.append(E('div', { style: 'height:' + Math.round(r.out / peak * 46) + 'px;background:#B23A3A;opacity:.6;border-radius:0 0 2px 2px' }));
+    col.append(E('div', { cls: 'pct', style: 'font-size:9px;text-align:center',
+      text: MONTHS[Number(r.mk.slice(5)) - 1].slice(0, 1) }));
+    strip.append(col);
+  });
+  yc.append(strip);
+  yc.append(E('p', { cls: 'lede', style: 'margin-top:10px', text: varies
+    ? 'Each bar is one month \u2014 income above, spending below. Tap one to look at it. The totals add the months up rather than multiplying this month by twelve, so a cost that began in March counts for ten months, not the whole year.'
+    : 'Nothing starts or stops during the year, so every month is the same. Give a line a first or last month and this will show the shape of it.' }));
+  v.append(yc);
 }
 
 /* the balance sheet in the export */
@@ -4449,8 +4672,12 @@ function financeMarkdown(out, put) {
   }
   const inM = monthlyOf(F.flows, 'in'), outM = monthlyOf(F.flows, 'out');
   if (F.flows.length) {
-    out.push('**Every month**  \nIn ' + money(inM) + ', out ' + money(outM) +
+    out.push('**' + monthName(thisMonth()) + '**  \nIn ' + money(inM) + ', out ' + money(outM) +
       ', leaving ' + money(inM - outM) + '.\n');
+    const yNow = new Date().getFullYear(), rr = yearFlow(yNow);
+    const yi = rr.reduce((a, r) => a + r.in, 0), yo = rr.reduce((a, r) => a + r.out, 0);
+    out.push('**Across ' + yNow + '**  \nIn ' + money(yi) + ', out ' + money(yo) +
+      ', leaving ' + money(yi - yo) + '. Each line counts only for the months it runs.\n');
     ['in', 'out'].forEach(k => {
       const rows = F.flows.filter(x => x.k === k && (x.n || x.v));
       if (!rows.length) return;
@@ -6122,7 +6349,10 @@ async function cloudPush() {
     const body = JSON.stringify({
       description: 'Goal Digger — planner data',
       public: false,
-      files: { [GIST_FILE]: { content: payloadForCloud() } }
+      /* the summary rides along under a dot-free name, so a scheduled
+         shortcut can read files.summary.content straight off the API */
+      files: { [GIST_FILE]: { content: payloadForCloud() },
+               summary: { content: vaultSummary() } }
     });
     let res;
     if (S.cfg.gist) {
@@ -6738,6 +6968,10 @@ async function pruneMedia() {
 /* backups have to carry the plates, so they are inlined on the way out */
 async function fullBackup() {
   const copy = JSON.parse(JSON.stringify(S));
+  /* a backup file is the thing most likely to be mailed, shared or committed
+     somewhere public, so the GitHub token does not travel in it. It is typed
+     back in once; the writing is what matters here. */
+  if (copy.cfg) { copy.cfg.token = ''; }
   const bag = {};
   for (const e of (copy.studio.entries || [])) {
     for (const m of (e.media || [])) {
@@ -6807,6 +7041,98 @@ function applyUpdate() {
 }
 
 
+/* ===================== recurring money, with a life span =====================
+   A recurring line used to be timeless: enter childcare today and the planner
+   behaved as though it had been running since January. Each line now carries
+   an optional first and last month, so a cost that started in March counts
+   from March, and one that stopped in June stops in June. Both ends are
+   optional — leave them blank and the line runs forever, which is what every
+   line written before this did. */
+
+/* monthKey(year, zeroBasedMonth) already exists up the file; these build on it */
+const monthOf = d => monthKey(d.getFullYear(), d.getMonth());
+const thisMonth = () => monthOf(new Date());
+const monthName = mk => {
+  const [y, m] = String(mk || '').split('-').map(Number);
+  return (MONTHS[(m || 1) - 1] || '') + ' ' + (y || '');
+};
+const monthStep = (mk, n) => {
+  const [y, m] = String(mk).split('-').map(Number);
+  return monthOf(new Date(y, (m - 1) + n, 1));
+};
+const monthsOfYear = y => MONTHS.map((_, i) => monthKey(Number(y), i));
+
+/* is this line running in that month? */
+function flowActive(x, mk) {
+  if (!mk) return true;
+  if (x.from && mk < x.from) return false;
+  if (x.to && mk > x.to) return false;
+  return true;
+}
+
+/* which month is being looked at */
+let budgetMonth = null;
+const viewedMonth = () => budgetMonth || thisMonth();
+
+/* the planner's years, plus a little room either side, for the pickers */
+function monthOptions() {
+  const years = new Set();
+  const here = new Date().getFullYear();
+  [here - 1, here, here + 1, here + 2].forEach(y => years.add(y));
+  (typeof yearsPresent === 'function' ? yearsPresent() : []).forEach(y => years.add(Number(y)));
+  (S.finance && S.finance.flows || []).forEach(x => {
+    [x.from, x.to].forEach(v => { if (v) years.add(Number(String(v).slice(0, 4))); });
+  });
+  return Array.from(years).filter(y => y > 1990 && y < 2200).sort()
+    .flatMap(y => monthsOfYear(y));
+}
+
+/* a small month picker that works everywhere — Safari does not render
+   <input type="month"> on the phone, so this is a plain select */
+function monthPicker(value, onPick, blankLabel) {
+  const sel = E('select', { style: 'font-size:12.5px;padding:4px 6px',
+    onchange: e => onPick(e.target.value) });
+  if (blankLabel) {
+    const o = E('option', { value: '', text: blankLabel });
+    if (!value) o.selected = true;
+    sel.append(o);
+  }
+  monthOptions().forEach(mk => {
+    const o = E('option', { value: mk, text: monthName(mk) });
+    if (mk === value) o.selected = true;
+    sel.append(o);
+  });
+  sel.value = value || '';
+  return sel;
+}
+
+/* ---- the sums, now answered for a given month ---- */
+function monthlyOfIn(arr, kind, mk) {
+  return (arr || []).filter(x => x.k === kind && flowActive(x, mk))
+    .reduce((a, x) => a + num(x.v) * freqMul(x.f), 0);
+}
+/* in and out across every month of a year, so the year total is the sum of
+   what each month actually was rather than one month multiplied by twelve */
+function yearFlow(year) {
+  return monthsOfYear(year).map(mk => ({
+    mk,
+    in: monthlyOfIn(S.finance.flows, 'in', mk),
+    out: monthlyOfIn(S.finance.flows, 'out', mk)
+  }));
+}
+
+/* close a line at the end of last month and start a fresh one from this one,
+   which is how a rent rise or a new rate gets recorded without rewriting
+   what the earlier months cost */
+function splitFlow(arr, i, fromMk) {
+  const x = arr[i];
+  const copy = Object.assign({}, x, { id: uid(), from: fromMk, to: x.to });
+  x.to = monthStep(fromMk, -1);
+  arr.splice(i + 1, 0, copy);
+  return copy;
+}
+
+
 
 /* ===================== the vault: a folder you can open anywhere =====================
    Everything the planner holds, written out as ordinary files: Markdown for
@@ -6820,6 +7146,7 @@ function applyUpdate() {
 
 /* the gathered folder, waiting for a fresh tap to save it */
 let vaultReady = null;
+let peekSummary = false, showNoteHelp = false, summaryHushed = false;
 
 /* ---------- zip, stored entries, no dependencies ---------- */
 let _crcTable = null;
@@ -7004,32 +7331,98 @@ function vaultCsvs() {
   const F = finance();
   const finRows = []
     .concat((F.flows || []).filter(x => (x.n || '').trim())
-      .map(x => ['flow', x.k || '', x.n, x.v || '', freqName(x.f), '']))
+      .map(x => ['flow', x.k || '', x.n, x.v || '', freqName(x.f), '', x.from || '', x.to || '']))
     .concat((F.assets || []).filter(x => (x.n || '').trim())
-      .map(x => ['asset', '', x.n, x.v || '', '', '']))
+      .map(x => ['asset', '', x.n, x.v || '', '', '', '', '']))
     .concat((F.liabs || []).filter(x => (x.n || '').trim())
-      .map(x => ['liability', '', x.n, x.v || '', '', '']))
+      .map(x => ['liability', '', x.n, x.v || '', '', '', '', '']))
     .concat((S.projects || []).flatMap(p => (p.costs || [])
       .filter(c => (c.n || '').trim())
-      .map(c => ['project cost', '', c.n, c.v || '', '', p.title || p.id])));
-  out['data/finance.csv'] = csv(['type', 'kind', 'name', 'amount', 'frequency', 'project'], finRows);
+      .map(c => ['project cost', '', c.n, c.v || '', '', p.title || p.id, '', ''])));
+  out['data/finance.csv'] = csv(
+    ['type', 'kind', 'name', 'amount', 'frequency', 'project', 'from', 'until'], finRows);
+
+  /* what each month of the year actually comes to, now that lines start and stop */
+  const yNow = new Date().getFullYear();
+  out['data/months.csv'] = csv(['month', 'in', 'out', 'surplus'],
+    yearFlow(yNow).map(r => [r.mk, Math.round(r.in), Math.round(r.out), Math.round(r.in - r.out)]));
 
   return out;
 }
+
+/* ---------- the window ----------
+   The summary covers what has happened since the last one went out, rather
+   than a rolling month, so reading it twice in a week does not replay things
+   already seen. Falls back to thirty days the first time. */
+function summaryWindow() {
+  const todayIso = iso(new Date());
+  const last = S.meta.lastSummary || S.meta.lastVault || S.meta.lastBackup || '';
+  if (!last) return { from: iso(addDays(new Date(), -29)), to: todayIso, days: 30, since: null };
+  /* a second summary on the same day covers the day, rather than silently
+     falling back to a month and looking like nothing was sent */
+  if (last >= todayIso) return { from: todayIso, to: todayIso, days: 1, since: todayIso };
+  const days = Math.round((parseIso(todayIso) - parseIso(last)) / 86400000) + 1;
+  return { from: last, to: todayIso, days, since: last };
+}
+/* a summary nobody can read is no use to Siri either, so long lists are
+   cut short rather than printed in full */
+function namesOf(items, sep) {
+  const cap = 12;
+  if (items.length <= cap) return items.join(sep || ', ');
+  return items.slice(0, cap).join(sep || ', ') +
+    ' and ' + (items.length - cap) + ' more';
+}
+const longDate = s => {
+  const d = parseIso(s);
+  return d.getDate() + ' ' + MONTHS[d.getMonth()] + (d.getFullYear() !== new Date().getFullYear() ? ' ' + d.getFullYear() : '');
+};
 
 /* ---------- the summary, written as sentences ----------
    A semantic index retrieves meaning, not arithmetic, so the figures are
    spelled out in prose rather than left as a table to add up. */
 function vaultSummary() {
   const today = new Date(), L = [];
+  const W = summaryWindow();
+  const tIso = W.to;
   const dateLong = today.getDate() + ' ' + MONTHS[today.getMonth()] + ' ' + today.getFullYear();
   const pl = (n, one, many) => n + ' ' + (n === 1 ? one : (many || one + 's'));
-  const times = n => n === 1 ? 'once' : n + ' times';
+  const times = n => n === 0 ? 'not at all' : n === 1 ? 'once' : n + ' times';
+  const inWindow = d => !!d && d >= W.from && d <= W.to;
+  /* over a two-day window a percentage is noise, so it is left off */
+  const rates = W.days >= 4;
+  const spell = !W.since ? 'over the last 30 days'
+    : W.since === tIso ? 'so far today'
+    : 'since ' + longDate(W.since) + ', ' + pl(W.days, 'day') + ' ago';
 
   L.push('# Planner summary', '');
-  L.push('This is a plain-English summary of Tony’s planner, written on ' + dateLong + '.', '');
+  L.push('This is a plain-English summary of Tony’s planner, written on ' + dateLong + '.');
+  L.push(W.since
+    ? 'The counts below cover what has happened ' + spell + ', which is when the last summary was taken.'
+    : 'This is the first summary, so the counts below cover the last 30 days.', '');
 
-  /* goals */
+  /* ---- what has changed in the window ---- */
+  const newRefl = reflections().filter(e => inWindow(e.date));
+  const newLogs = logs().filter(e => inWindow(e.date));
+  const newJournal = journalEntries().filter(j => inWindow(j.date));
+  const doneTasks = Object.keys(S.days).filter(inWindow)
+    .reduce((a, dk) => a + (S.days[dk].tasks || []).filter(t => t.d && (t.t || '').trim()).length, 0);
+  const newClaims = (S.studio.claims || []).filter(c => inWindow(c.date));
+  if (newRefl.length || newLogs.length || newJournal.length || doneTasks || newClaims.length) {
+    L.push('## What has happened ' + spell, '');
+    if (doneTasks) L.push('- ' + pl(doneTasks, 'task') + ' ticked off.');
+    if (newRefl.length) L.push('- ' + pl(newRefl.length, 'studio reflection') + ' written: ' +
+      namesOf(newRefl.map(e => '“' + (e.title || 'untitled') + '”')) + '.');
+    if (newLogs.length) L.push('- ' + pl(newLogs.length, 'general studio note') + ' recorded.');
+    if (newClaims.length) L.push('- ' + pl(newClaims.length, 'new finding') + ': ' +
+      namesOf(newClaims.map(c => (c.text || 'untitled').trim()), '; ') + '.');
+    if (newJournal.length) L.push('- Journal written on ' + pl(newJournal.length, 'day') + '.');
+    L.push('');
+  } else if (W.since) {
+    L.push('## What has happened ' + spell, '',
+      'Nothing new has been written or ticked off in that time.', '');
+  }
+
+  /* ---- goals ---- */
   const act = activeGoals(), paused = pausedGoals();
   const done = (S.goals || []).filter(g => g.completed);
   L.push('## Where things stand', '');
@@ -7038,9 +7431,8 @@ function vaultSummary() {
   if (done.length) s += ' ' + pl(done.length, 'goal') + ' ' + (done.length === 1 ? 'has' : 'have') + ' been completed.';
   L.push(s);
 
-  act.slice(0, 8).forEach(g => {
-    const p = goalProgress(g);
-    L.push('- ' + (g.title || 'Untitled goal') + ' is ' + p + '% of the way there' +
+  act.slice(0, 10).forEach(g => {
+    L.push('- ' + (g.title || 'Untitled goal') + ' is ' + goalProgress(g) + '% of the way there' +
       (g.targetYear ? ', aimed at ' + g.targetYear : '') + '.');
   });
   L.push('');
@@ -7061,8 +7453,7 @@ function vaultSummary() {
     L.push('');
   }
 
-  /* overdue */
-  const tIso = iso(today);
+  /* ---- overdue ---- */
   const lateP = (S.projects || []).filter(p => !p.done && !isPaused(p) && p.due && p.due < tIso);
   const lateM = (S.goals || []).flatMap(g => (g.milestones || [])
     .filter(m => !m.d && m.due && m.due < tIso && (m.t || '').trim())
@@ -7080,36 +7471,38 @@ function vaultSummary() {
       ' left behind in the last three weeks.', '');
   }
 
-  /* habits */
+  /* ---- habits ---- */
   if ((S.habits || []).length) {
-    L.push('## Habits over the last 30 days', '');
+    L.push('## Habits ' + spell, '');
     (S.habits || []).filter(h => (h.name || '').trim()).forEach(h => {
-      const r = habitRate(h.id, 30);
-      const hit = countBetween(h.id, iso(addDays(today, -29)), tIso);
-      /* "three times a week" over 30 days lands on a fraction; nobody wants to read that */
-      const exp = Math.round(expectedBetween(h, iso(addDays(today, -29)), tIso));
-      L.push('- ' + h.name + ': done ' + times(hit) + ' against ' + exp +
-        ' planned, which is ' + r + '%.');
+      const hit = countBetween(h.id, W.from, W.to);
+      /* "three times a week" across an odd number of days lands on a fraction */
+      const exp = Math.round(expectedBetween(h, W.from, W.to));
+      if (!rates || exp <= 0) {
+        L.push('- ' + h.name + ': done ' + times(hit) + '.');
+      } else {
+        L.push('- ' + h.name + ': done ' + times(hit) + ' against ' + exp +
+          ' planned, which is ' + Math.min(100, Math.round(hit / exp * 100)) + '%.');
+      }
     });
     L.push('');
   }
 
-  /* practice */
-  const pdays = Object.keys((S.limbs || {}).days || {})
-    .filter(k => k >= iso(addDays(today, -29)) && k <= tIso)
-    .filter(k => Object.keys((S.limbs.days[k] || {}).marks || {}).length);
+  /* ---- practice ---- */
   if (Object.keys((S.limbs || {}).days || {}).length) {
+    const pdays = Object.keys(S.limbs.days)
+      .filter(k => inWindow(k) && Object.keys((S.limbs.days[k] || {}).marks || {}).length);
     L.push('## Practice', '');
-    L.push('The eight limbs were practised on ' + pl(pdays.length, 'day') +
-      ' of the last 30. The current run is ' + pl(limbStreak(), 'day') + '.', '');
+    L.push('The eight limbs were practised on ' + pl(pdays.length, 'day') + ' ' +
+      (W.since ? spell : 'of the last 30') + '. The current run is ' + pl(limbStreak(), 'day') + '.', '');
   }
 
-  /* studio */
+  /* ---- studio, in total ---- */
   const refl = reflections(), lg = logs(), works = (S.studio.works || []), claims = (S.studio.claims || []);
   if (refl.length || lg.length) {
-    L.push('## Studio', '');
+    L.push('## The studio record in total', '');
     L.push('There ' + (refl.length === 1 ? 'is ' : 'are ') + pl(refl.length, 'structured reflection') +
-      ' and ' + pl(lg.length, 'general studio note') + ' on record. ' +
+      ' and ' + pl(lg.length, 'general studio note') + ' on record altogether. ' +
       pl(evidenceSessions().length, 'session') + ' ' +
       (evidenceSessions().length === 1 ? 'has' : 'have') + ' been marked as evidence.');
     if (works.length) L.push('The writing is organised around ' +
@@ -7117,7 +7510,6 @@ function vaultSummary() {
       ': ' + works.map(w => w.title || 'untitled').join(', ') + '.');
     if (claims.length) L.push('There ' + (claims.length === 1 ? 'is ' : 'are ') +
       pl(claims.length, 'finding') + ' recorded, ' + topClaims().length + ' of them standing at the top of the argument.');
-    /* the shared vocabulary, so note tags count alongside session threads */
     const th = allThemeCounts().slice(0, 8);
     if (th.length) L.push('The threads that recur most: ' +
       th.map(t => t.label + ' (' + t.n + ')').join(', ') + '.');
@@ -7134,20 +7526,29 @@ function vaultSummary() {
     }
   }
 
-  /* money */
+  /* ---- money ---- */
   const F = finance();
-  const inc = monthlyOf(F.flows || [], 'in'), exp2 = monthlyOf(F.flows || [], 'out');
-  if (inc || exp2) {
+  const inc = monthlyOf(F.flows || [], 'in'), spend = monthlyOf(F.flows || [], 'out');
+  if (inc || spend) {
     L.push('## Money', '');
-    L.push('Monthly income comes to about ' + money(inc) + ' against roughly ' + money(exp2) +
-      ' of expenses, leaving ' + money(inc - exp2) + ' a month.');
+    L.push('In ' + monthName(thisMonth()) + ', income comes to about ' + money(inc) +
+      ' against roughly ' + money(spend) + ' of expenses, leaving ' + money(inc - spend) + '.');
+    const yrNow = new Date().getFullYear(), rowsNow = yearFlow(yrNow);
+    const yIn = rowsNow.reduce((a, r) => a + r.in, 0), yOut = rowsNow.reduce((a, r) => a + r.out, 0);
+    L.push('Across ' + yrNow + ' as a whole that adds up to ' + money(yIn) + ' in and ' +
+      money(yOut) + ' out, counting each line only for the months it actually runs.');
+    const starting = (F.flows || []).filter(x => x.from === thisMonth() && (x.n || '').trim());
+    const ending = (F.flows || []).filter(x => x.to === thisMonth() && (x.n || '').trim());
+    if (starting.length) L.push('Starting this month: ' +
+      starting.map(x => x.n + ' at ' + money(num(x.v)) + ' ' + freqName(x.f)).join(', ') + '.');
+    if (ending.length) L.push('Finishing this month: ' + ending.map(x => x.n).join(', ') + '.');
     const assets = sumOf(F.assets || []), liabs = sumOf(F.liabs || []);
     if (assets || liabs) L.push('Assets total about ' + money(assets) + ' and liabilities ' +
       money(liabs) + ', so net worth sits near ' + money(assets - liabs) + '.');
     L.push('');
   }
 
-  /* what is next */
+  /* ---- ahead ---- */
   const soon = datedItems().filter(x => x.date >= tIso).sort((a, b) => a.date < b.date ? -1 : 1).slice(0, 8);
   if (soon.length) {
     L.push('## Coming up', '');
@@ -7161,6 +7562,104 @@ function vaultSummary() {
   }
 
   return L.join('\n');
+}
+
+/* ---------- getting it into Notes, where Siri can read it ----------
+   Apple's index covers Notes, so the summary goes there rather than sitting
+   in a file and hoping. The shortcut replaces the note each time, so Siri is
+   never answering from last month's figures. */
+function sendSummaryToNotes() {
+  const text = vaultSummary();
+  const url = 'shortcuts://run-shortcut?name=' +
+    encodeURIComponent(S.cfg.noteShortcut || 'Planner Summary') +
+    '&input=text&text=' + encodeURIComponent(text);
+  const a = E('a', { href: url });
+  document.body.append(a); a.click(); a.remove();
+  stampSummary();
+  toast('Sent to Shortcuts');
+}
+
+function stampSummary() {
+  S.meta.lastSummary = iso(new Date());
+  save(true);
+}
+
+/* if the shortcut is not set up, the clipboard still works */
+async function copySummary() {
+  const text = vaultSummary();
+  try {
+    await navigator.clipboard.writeText(text);
+    stampSummary();
+    toast('Copied — paste it into Notes');
+  } catch (e) {
+    toast('Could not copy');
+  }
+}
+
+/* and as a file, for Files or anywhere else */
+function downloadSummary() {
+  download('Planner-summary-' + iso(new Date()) + '.md', vaultSummary(), 'text/markdown');
+  stampSummary();
+}
+
+/* ---------- straight into iCloud Drive, no zip ----------
+   The summary is about two kilobytes, which fits comfortably in a URL, so a
+   shortcut can take it and write the file itself. Nothing is downloaded and
+   no save sheet appears: Shortcuts flicks up and hands back. The whole folder
+   cannot go this way \u2014 the plates are far past what a URL will carry. */
+function sendSummaryToFile() {
+  const payload = { name: 'Planner summary.md', text: vaultSummary() };
+  const url = 'shortcuts://run-shortcut?name=' +
+    encodeURIComponent(S.cfg.fileShortcut || 'Save Planner File') +
+    '&input=text&text=' + encodeURIComponent(JSON.stringify(payload));
+  if (url.length > 60000) { toast('Too long for a shortcut \u2014 use the folder instead'); return; }
+  const a = E('a', { href: url });
+  document.body.append(a); a.click(); a.remove();
+  stampSummary();
+  toast('Sent to Shortcuts');
+}
+
+/* ---------- is it time? ----------
+   A web page cannot wake itself, so "every so often" means noticing on the
+   way past rather than running in the background. */
+const summaryEvery = () => Math.max(0, parseInt(S.cfg.summaryEvery, 10) || 0);
+function summaryDue() {
+  const every = summaryEvery();
+  if (!every) return false;
+  const last = S.meta.lastSummary || S.meta.lastVault || S.meta.lastBackup;
+  if (!last) return true;
+  return Math.round((new Date() - parseIso(last)) / 86400000) >= every;
+}
+
+/* ---------- keeping the cloud summary current ----------
+   Firing a shortcut on every save would throw you out of the app mid-sentence,
+   so nothing is triggered that way. What can happen on the way past is this:
+   a small PATCH carrying only the summary, sent as the app goes to the
+   background. Gist PATCH merges by file, so the planner data is untouched.
+
+   keepalive is the point of it \u2014 it lets the request outlive the page being
+   put away, which the full-sized push cannot, since keepalive bodies are
+   capped at 64KB and a year of planner data is many times that. So the
+   summary gets through on occasions when the whole push would be killed. */
+async function pushSummaryOnly() {
+  if (!S.cfg.token || !S.cfg.gist) return false;
+  let body;
+  try { body = JSON.stringify({ files: { summary: { content: vaultSummary() } } }); }
+  catch (e) { return false; }
+  if (body.length > 60000) return false;            /* past what keepalive carries */
+  try {
+    const res = await fetch('https://api.github.com/gists/' + S.cfg.gist, {
+      method: 'PATCH', headers: gistHeaders(), body, keepalive: true });
+    if (res && res.ok) { S.meta.lastSummaryPush = new Date().toISOString(); }
+    return !!(res && res.ok);
+  } catch (e) { return false; }
+}
+
+/* called as the app is put away */
+function summaryOnBackground() {
+  if (S.cfg.summaryPush === false) return;
+  if (!S.cfg.token || !S.cfg.gist) return;
+  pushSummaryOnly();
 }
 
 /* ---------- the Markdown notes ---------- */
@@ -7400,8 +7899,8 @@ async function vaultPlates(withPhotos) {
 /* ---------- assembling the folder ---------- */
 const VAULT_README = [
   '# Planner vault', '',
-  'This folder is the planner’s contents written out as ordinary files.',
-  'Open it as an Obsidian vault, or just read it — it is plain Markdown and CSV.', '',
+  'This folder is the planner’s contents written out as ordinary files —',
+  'plain Markdown and CSV, readable in anything, no app required.', '',
   '- `Summary.md` — how things stand, in plain sentences. This is the one Siri can read.',
   '- `Reflections/` — one file per studio session.',
   '- `Works/`, `Findings/` — the bodies of work and the argument, linked to the sessions that evidence them.',
@@ -7495,6 +7994,8 @@ window.addEventListener('beforeunload', () => save(true));
 document.addEventListener('visibilitychange', () => {
   if (!document.hidden) return;
   save(true);
+  /* the small one first: it is the one that survives being put away */
+  summaryOnBackground();
   if (S.cfg.auto && S.cfg.token && S.cfg.gist && dirty) cloudPush();
 });
 if (navigator.storage && navigator.storage.persist) {
