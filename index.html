@@ -182,7 +182,7 @@ textarea::placeholder,input::placeholder{color:var(--faint)}
 <script>
 /* ===================== core ===================== */
 const KEY = 'goaldigger2026';
-/* BUILD_STAMP */ const BUILD = '2026-10-21.1525';
+/* BUILD_STAMP */ const BUILD = '2026-10-21.1605';
 const YEAR = 2026;                       /* the year this planner began */
 const CURRENT_YEAR = new Date().getFullYear();
 const MONTHS = ['January','February','March','April','May','June','July','August','September','October','November','December'];
@@ -3892,16 +3892,19 @@ function pageData() {
   const everything = E('div', { style: 'margin-top:12px;padding-top:10px;border-top:1px solid var(--rule)' });
   everything.append(E('div', { style: 'font-size:14.5px', text: 'Everything, not just the summary' }));
   everything.append(E('p', { cls: 'lede', style: 'margin:2px 0 8px', text: 'Your goals, projects, studio sessions, findings, journal, notes, money and practice, each as its own note. Apple\u2019s index reads Notes reliably \u2014 whether it reaches files in iCloud Drive nobody has confirmed \u2014 so this is what lets Siri answer about more than the headline.' }));
+  const allDone = !pl2.done && !!S.meta.lastPages;
   everything.append(E('div', { cls: 'btnrow' }, [
     E('button', { cls: 'btn' + (pl2.done ? ' fill' : ''),
-      text: pl2.done ? 'Send the rest (' + pl2.left + ' to go)' : 'Send everything',
+      text: pl2.done ? 'Send the rest (' + pl2.left + ' to go)'
+          : allDone ? 'Send again' : 'Send everything',
       onclick: () => { sendPagesToNotes(); setTimeout(render, 400); } }),
-    pl2.done ? E('button', { cls: 'btn', text: 'Start over',
-      onclick: () => { setCursor(0); render(); } }) : null
+    pl2.done ? E('button', { cls: 'btn', text: 'Send the whole lot again',
+      onclick: () => { setCursor(0); delete S.meta.lastPages; save(true); render(); } }) : null
   ].filter(Boolean)));
   everything.append(E('div', { cls: 'pct', style: 'margin-top:6px', text: pl2.done
-    ? pl2.done + ' of ' + pl2.total + ' pages sent'
-    : pl2.total + ' page' + (pl2.total === 1 ? '' : 's') + '. A URL will not carry them all at once, so it takes a tap or two.' }));
+    ? pl2.done + ' of ' + pl2.total + ' pages sent \u2014 tap again, you will not see a message because the app is in the background by then'
+    : allDone ? 'All ' + pl2.total + ' pages have gone across. Come back here after each trip to Shortcuts \u2014 this line is how you tell, not a message on screen.'
+    : pl2.total + ' page' + (pl2.total === 1 ? '' : 's') + ' to send. A URL will not carry them all at once, so it takes a tap or two \u2014 come back here between each.' }));
   sc.append(everything);
 
   /* see it before sending it */
@@ -4014,6 +4017,10 @@ function pageData() {
   diag.append(E('div', { cls: 'pct', text: 'It will call a shortcut named \u201c' + F2.shortcut + '\u201d' }));
   diag.append(E('div', { cls: 'pct', text: 'Next tap sends ' + F2.pages + ' page' + (F2.pages === 1 ? '' : 's') +
     ' (' + F2.names.join(', ') + '), a URL of ' + F2.urlLength + ' characters' }));
+  diag.append(E('div', { cls: 'pct', text: S.meta.lastPages
+    ? 'Journal and studio are sending only what is new since ' + longDate(S.meta.lastPages) +
+      ' \u2014 if you deleted those notes, use Send the whole lot again first'
+    : 'Journal and studio will send in full' }));
   diag.append(E('div', { cls: 'btnrow', style: 'margin-top:8px' }, [
     E('button', { cls: 'btn', text: 'Copy the payload', onclick: () => copyPayload() }),
     E('button', { cls: 'btn', text: showPayload ? 'Hide it' : 'Show it',
@@ -8366,17 +8373,20 @@ function sendPagesToNotes() {
   const url = 'shortcuts://run-shortcut?name=' +
     encodeURIComponent(S.cfg.noteShortcut || 'Planner Summary') +
     '&input=text&text=' + encodeURIComponent(JSON.stringify({ pages: items }));
-  const a = E('a', { href: url });
-  document.body.append(a); a.click(); a.remove();
+  /* Record where we got to BEFORE handing over to Shortcuts. Opening the
+     scheme backgrounds this page, and anything after the handoff may simply
+     never run — which is how the cursor kept coming back as nothing and the
+     same first pages went out again and again. The toast is written for the
+     same reason: by the time it would show, the app is already gone. */
   if (next >= pages.length) {
     setCursor(0);
     S.meta.lastPages = iso(new Date());     /* next time, only what is new */
     stampSummary();
-    toast('All sent');
   } else {
     setCursor(next);
-    toast(items.length + ' sent \u2014 tap again for the rest');
   }
+  const a = E('a', { href: url });
+  document.body.append(a); a.click(); a.remove();
 }
 
 const pagesLeft = () => {
