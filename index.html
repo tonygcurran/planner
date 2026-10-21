@@ -182,7 +182,7 @@ textarea::placeholder,input::placeholder{color:var(--faint)}
 <script>
 /* ===================== core ===================== */
 const KEY = 'goaldigger2026';
-/* BUILD_STAMP */ const BUILD = '2026-10-21.1605';
+/* BUILD_STAMP */ const BUILD = '2026-10-21.1645';
 const YEAR = 2026;                       /* the year this planner began */
 const CURRENT_YEAR = new Date().getFullYear();
 const MONTHS = ['January','February','March','April','May','June','July','August','September','October','November','December'];
@@ -1801,15 +1801,32 @@ function viewToday() {
       E('button', { cls: 'x', text: '\u00d7', 'aria-label': 'Not now',
         onclick: () => { summaryHushed = true; render(); } })]));
     sb.append(E('p', { cls: 'lede', text: (S.meta.lastSummary
-      ? 'The last one went out ' + Math.round((new Date() - parseIso(S.meta.lastSummary)) / 86400000) + ' days ago. '
+      ? 'The last one went out ' + daysAgo(S.meta.lastSummary) + ' days ago. '
       : 'None has gone out yet. ') + 'Sending one keeps Siri answering from this week rather than last month.' }));
     sb.append(E('div', { cls: 'btnrow', style: 'margin-top:8px' }, [
-      E('button', { cls: 'btn fill', text: 'Send to Notes',
+      E('button', { cls: 'btn fill', text: 'Send it now',
         onclick: () => { sendSummaryToNotes(); setTimeout(render, 400); } }),
-      E('button', { cls: 'btn', text: 'Send to iCloud',
-        onclick: () => { sendSummaryToFile(); setTimeout(render, 400); } })
+      E('button', { cls: 'btn', text: 'Everything',
+        onclick: () => { sendPagesToNotes(); setTimeout(render, 400); } })
     ]));
     v.append(sb);
+  }
+
+  /* ---------- plates still only on this device ---------- */
+  const nagP = isNow && !platesHushed ? platesNag() : 0;
+  if (nagP) {
+    const pb = E('div', { cls: 'card' });
+    pb.append(E('div', { cls: 'head' }, [
+      E('h2', { text: 'Plates not backed up' }),
+      E('button', { cls: 'x', text: '×', 'aria-label': 'Not now',
+        onclick: () => { platesHushed = true; render(); } })]));
+    pb.append(E('p', { cls: 'lede', text: nagP + ' studio ' +
+      (nagP === 1 ? 'photograph has' : 'photographs have') + ' gone in since the last vault write' +
+      (S.meta.lastVault ? ', ' + daysAgo(S.meta.lastVault) + ' days ago' : '') +
+      '. They exist on this phone and nowhere else — writing a vault is the only way they get to iCloud at full size.' }));
+    pb.append(E('button', { cls: 'btn fill', style: 'margin-top:8px', text: 'Write one now',
+      onclick: () => go('more', 'data') }));
+    v.append(pb);
   }
 
 
@@ -3874,7 +3891,7 @@ function pageData() {
   /* ---------- the summary, for Siri ---------- */
   const sc = E('div', { cls: 'card' });
   sc.append(E('h2', { text: 'Summary for Siri' }));
-  sc.append(E('p', { cls: 'lede', text: 'A short plain-English account of where things stand — what you have done, what is overdue, what you are waiting on — written as sentences rather than figures, because that is what Apple’s index can actually read. It goes into a note called Planner Summary, and replaces the one before it.' }));
+  sc.append(E('p', { cls: 'lede', text: 'A short plain-English account of where things stand — what you have done, what is overdue, what you are waiting on — written as sentences rather than figures, because that is what Apple’s index can actually read. It goes to the top of a note called Planner Summary, so that note becomes a dated log with the newest first.' }));
 
   const W = summaryWindow();
   sc.append(E('div', { cls: 'pct', style: 'margin-top:8px', text: W.since
@@ -3882,8 +3899,7 @@ function pageData() {
     : 'No summary has gone out yet, so the first one covers the last 30 days.' }));
 
   sc.append(E('div', { cls: 'btnrow', style: 'margin-top:10px' }, [
-    E('button', { cls: 'btn fill', text: 'Send to Notes', onclick: () => { sendSummaryToNotes(); setTimeout(render, 400); } }),
-    E('button', { cls: 'btn', text: 'Send to iCloud', onclick: () => { sendSummaryToFile(); setTimeout(render, 400); } }),
+    E('button', { cls: 'btn fill', text: 'Just the summary', onclick: () => { sendSummaryToNotes(); setTimeout(render, 400); } }),
     E('button', { cls: 'btn', text: 'Copy instead', onclick: () => copySummary().then(render) })
   ]));
 
@@ -3926,12 +3942,6 @@ function pageData() {
     oninput: e => { S.cfg.noteShortcut = e.target.value; save(); } }));
   sc.append(snRow);
 
-  const fnRow = E('div', { style: 'margin-top:10px' });
-  fnRow.append(E('div', { cls: 'pct', text: 'Shortcut that writes the iCloud file' }));
-  fnRow.append(E('input', { type: 'text', placeholder: 'Save Planner File',
-    value: S.cfg.fileShortcut || '',
-    oninput: e => { S.cfg.fileShortcut = e.target.value; save(); } }));
-  sc.append(fnRow);
 
   const evRow = E('div', { style: 'margin-top:12px;padding-top:10px;border-top:1px solid var(--rule)' });
   evRow.append(E('div', { cls: 'pct', text: 'Remind me to send one' }));
@@ -3980,16 +3990,6 @@ function pageData() {
     hb.append(E('p', { cls: 'lede', text: 'Or describe it: \u201cThe input is a dictionary with a key called pages holding a list. For each item, find a note whose name is exactly the item\u2019s lower-case name value. If one exists, prepend the item\u2019s lower-case text value to it as Markdown. If not, create a new note from that text.\u201d' }));
     hb.append(E('p', { cls: 'lede', text: 'Then ask Siri things like \u201cwhat does my planner summary say about this week\u201d or \u201cwhat am I waiting on\u201d. Each entry names the stretch it covers, so an older one further down reads as history rather than as now.' }));
 
-    hb.append(E('h2', { style: 'margin-top:16px', text: 'The iCloud file' }));
-    hb.append(E('p', { cls: 'lede', text: 'A second shortcut, Save Planner File, writes the summary into iCloud Drive with no zip and no save sheet. Two actions:' }));
-    [['1. Get Dictionary from Input', 'the planner sends a small dictionary holding a name and the text'],
-     ['2. Save File', 'content set to the Text value, destination a folder in iCloud Drive, Ask Where To Save off and Overwrite If File Exists on']]
-      .forEach(([a, b]) => {
-        hb.append(E('div', { style: 'padding:6px 0;border-top:1px solid var(--rule)' }, [
-          E('div', { style: 'font-size:13.5px', text: a }),
-          E('p', { cls: 'lede', style: 'margin:2px 0 0', text: b })]));
-      });
-
     hb.append(E('h2', { style: 'margin-top:16px', text: 'Without touching it at all' }));
     hb.append(E('p', { cls: 'lede', text: S.cfg.gist
       ? 'Your cloud copy already carries the summary as a file called summary, rewritten every time this planner syncs. So a Shortcuts automation can fetch it on a schedule with the planner shut: a Time of Day automation, Get Contents of URL for the address below with an Authorization header reading Bearer and your token, Get Dictionary Value for files.summary.content, then Create Note. That runs whether or not you open anything.'
@@ -4033,7 +4033,7 @@ function pageData() {
 
 
   if (S.meta.lastSummary) {
-    const sAge = Math.round((new Date() - parseIso(S.meta.lastSummary)) / 86400000);
+    const sAge = daysAgo(S.meta.lastSummary);
     sc.append(E('div', { cls: 'pct', style: 'margin-top:10px',
       text: 'Last sent ' + (sAge === 0 ? 'today' : sAge + ' day' + (sAge === 1 ? '' : 's') + ' ago') }));
   }
@@ -4053,6 +4053,12 @@ function pageData() {
       E('div', { style: 'font-size:14.5px', text: 'Include the plates' }),
       E('p', { cls: 'lede', style: 'margin:2px 0 0', text: 'Full-size images as real files. Much the biggest part of the folder — turn it off for a quick text-only copy.' })])
   ]));
+
+  const pend = platesPending();
+  if (pend) vc.append(E('div', { cls: 'pct', style: 'margin-top:8px;color:var(--acc)',
+    text: pend + ' plate' + (pend === 1 ? '' : 's') + ' ' + (pend === 1 ? 'has' : 'have') +
+      ' been added since the last write, so ' + (pend === 1 ? 'it is' : 'they are') +
+      ' still only on this device' }));
 
   const vStat = E('div', { cls: 'pct', style: 'margin-top:10px',
     text: vaultReady ? vaultReady.how + ' ready to save' : '' });
@@ -4079,6 +4085,7 @@ function pageData() {
       const r = await shareVaultZip(vaultReady);
       if (r === 'cancelled') { vStat.textContent = 'Cancelled · still ready'; return; }
       S.meta.lastVault = iso(new Date()); stampSummary();
+      if (S.cfg.vaultPhotos) stampPlates();
       vaultReady = null;
       render();
       toast(r === 'shared' ? 'Choose Save to Files' : 'Downloaded');
@@ -4086,7 +4093,8 @@ function pageData() {
   };
 
   if (!vaultReady) {
-    vrow.append(E('button', { cls: 'btn fill', text: 'Gather the folder', onclick: gather }));
+    vrow.append(E('button', { cls: 'btn fill',
+      text: pend ? 'Gather the folder (' + pend + ' new)' : 'Gather the folder', onclick: gather }));
   } else {
     vrow.append(E('button', { cls: 'btn fill', text: 'Save to Files', onclick: saveZip }));
     vrow.append(E('button', { cls: 'btn', text: 'Start again',
@@ -4097,6 +4105,7 @@ function pageData() {
     try {
       const n = await writeVaultToFolder(await buildVault(S.cfg.vaultPhotos), true);
       S.meta.lastVault = iso(new Date()); stampSummary();
+      if (S.cfg.vaultPhotos) stampPlates();
       vaultReady = null;
       vStat.textContent = 'Wrote ' + n + ' files to the folder';
       toast('Folder written');
@@ -4113,7 +4122,7 @@ function pageData() {
     : 'Safari cannot be handed a folder to write into, so this arrives as a single zip. Tap Save to Files and put it in iCloud Drive — then open the Files app itself and tap the zip there. Previewing it anywhere else just shows the raw bytes.' }));
 
   if (S.meta.lastVault) {
-    const vAge = Math.round((new Date() - parseIso(S.meta.lastVault)) / 86400000);
+    const vAge = daysAgo(S.meta.lastVault);
     vc.append(E('div', { cls: 'pct', text: 'Last written ' + (vAge === 0 ? 'today' : vAge + ' day' + (vAge === 1 ? '' : 's') + ' ago') }));
   }
   v.append(vc);
@@ -7195,7 +7204,7 @@ function splitFlow(arr, i, fromMk) {
 
 /* the gathered folder, waiting for a fresh tap to save it */
 let vaultReady = null;
-let peekSummary = false, showNoteHelp = false, summaryHushed = false, showPayload = false;
+let peekSummary = false, showNoteHelp = false, summaryHushed = false, showPayload = false, platesHushed = false;
 
 /* ---------- zip, stored entries, no dependencies ---------- */
 let _crcTable = null;
@@ -7655,28 +7664,7 @@ async function copySummary() {
   }
 }
 
-/* and as a file, for Files or anywhere else */
-function downloadSummary() {
-  download('Planner-summary-' + iso(new Date()) + '.md', vaultSummary(), 'text/markdown');
-  stampSummary();
-}
 
-/* ---------- straight into iCloud Drive, no zip ----------
-   The summary is about two kilobytes, which fits comfortably in a URL, so a
-   shortcut can take it and write the file itself. Nothing is downloaded and
-   no save sheet appears: Shortcuts flicks up and hands back. The whole folder
-   cannot go this way \u2014 the plates are far past what a URL will carry. */
-function sendSummaryToFile() {
-  const payload = { name: 'Planner summary.md', text: vaultSummary() };
-  const url = 'shortcuts://run-shortcut?name=' +
-    encodeURIComponent(S.cfg.fileShortcut || 'Save Planner File') +
-    '&input=text&text=' + encodeURIComponent(JSON.stringify(payload));
-  if (url.length > 60000) { toast('Too long for a shortcut \u2014 use the folder instead'); return; }
-  const a = E('a', { href: url });
-  document.body.append(a); a.click(); a.remove();
-  stampSummary();
-  toast('Sent to Shortcuts');
-}
 
 /* ---------- is it time? ----------
    A web page cannot wake itself, so "every so often" means noticing on the
@@ -7687,7 +7675,7 @@ function summaryDue() {
   if (!every) return false;
   const last = S.meta.lastSummary || S.meta.lastVault || S.meta.lastBackup;
   if (!last) return true;
-  return Math.round((new Date() - parseIso(last)) / 86400000) >= every;
+  return daysAgo(last) >= every;
 }
 
 /* ---------- keeping the cloud summary current ----------
@@ -7719,6 +7707,36 @@ function summaryOnBackground() {
   if (S.cfg.summaryPush === false) return;
   if (!S.cfg.token || !S.cfg.gist) return;
   pushSummaryOnly();
+}
+
+/* Whole days between a stored date and today. Comparing a timestamp against
+   midnight makes yesterday afternoon look like two days, so both ends are
+   flattened to a date first. */
+function daysAgo(isoDate) {
+  if (!isoDate) return null;
+  const a = parseIso(isoDate), b = parseIso(iso(new Date()));
+  return Math.round((b - a) / 86400000);
+}
+
+/* ---------- plates waiting to get out ----------
+   The pictures only leave through a vault write, and that is the one step
+   nothing can do on your behalf, so it is also the one worth being reminded
+   about. Counting against the total at the last write needs no timestamps and
+   survives plates being deleted. */
+function totalPlates() {
+  return S.studio.entries.filter(e => !e.draft)
+    .reduce((a, e) => a + (e.media || []).length, 0);
+}
+const platesPending = () => Math.max(0, totalPlates() - (parseInt(S.meta.vaultPlates, 10) || 0));
+function stampPlates() { S.meta.vaultPlates = totalPlates(); }
+
+/* long enough to be worth mentioning on the way past */
+function platesNag() {
+  const n = platesPending();
+  if (!n) return 0;
+  const last = S.meta.lastVault;
+  if (!last) return n;
+  return daysAgo(last) >= 21 ? n : 0;
 }
 
 /* ---------- the Markdown notes ---------- */
@@ -8184,6 +8202,14 @@ function pageStudio(since) {
       sec('On action', e.onAction);
       sec('For action', e.forAction);
       if ((e.themes || []).length) L.push('Threads: ' + e.themes.join(', ') + '.');
+      /* the pictures cannot travel through a URL, but naming them here means
+         the writing and the plates can be found by the same words */
+      const shots = (e.media || []).length;
+      if (shots) L.push('Plates: ' + shots + ' image' + (shots === 1 ? '' : 's') +
+        ', filed under \u201c' + vaultSlug((e.date || '') + ' ' + (e.title || ''), 'plate') +
+        '\u201d' + ((e.media || []).some(m => (m.caption || '').trim())
+          ? ' \u2014 ' + (e.media || []).map(m => (m.caption || '').trim())
+              .filter(Boolean).join('; ') : '') + '.');
       L.push('');
     });
   }
