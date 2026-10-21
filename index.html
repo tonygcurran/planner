@@ -182,7 +182,7 @@ textarea::placeholder,input::placeholder{color:var(--faint)}
 <script>
 /* ===================== core ===================== */
 const KEY = 'goaldigger2026';
-/* BUILD_STAMP */ const BUILD = '2026-10-21.1330';
+/* BUILD_STAMP */ const BUILD = '2026-10-21.1420';
 const YEAR = 2026;                       /* the year this planner began */
 const CURRENT_YEAR = new Date().getFullYear();
 const MONTHS = ['January','February','March','April','May','June','July','August','September','October','November','December'];
@@ -1624,7 +1624,9 @@ function journalEntries() {
       label: MONTHS[mm - 1] + ' ' + y,
       open: () => { R.year = y; R.mo = mm - 1; go('month'); } });
   });
-  return out.sort((a, b) => a.date < b.date ? 1 : -1);
+  /* equal dates must compare equal, or the sort is free to reorder them and
+     two notes written on the same day come back the wrong way round */
+  return out.sort((a, b) => a.date === b.date ? 0 : (a.date < b.date ? 1 : -1));
 }
 const journalById = id => journalEntries().find(j => j.id === id);
 
@@ -8100,17 +8102,19 @@ function pageProjects() {
   return L.join('\n');
 }
 
-function pageStudio() {
-  const refl = reflections(), lg = logs();
-  if (!refl.length && !lg.length && !(S.studio.works || []).length) return '';
-  const L = ['# Studio', ''];
-  if ((S.studio.project || {}).title) {
+function pageStudio(since) {
+  const fresh = e => !since || (e.date || '') >= since;
+  const refl = reflections().filter(fresh), lg = logs().filter(fresh);
+  if (!refl.length && !lg.length && !since && !(S.studio.works || []).length) return '';
+  if (since && !refl.length && !lg.length) return '';
+  const L = [since ? '# Studio \u2014 added since ' + longDate(since) : '# Studio', ''];
+  if (!since && (S.studio.project || {}).title) {
     L.push('The project: ' + S.studio.project.title);
     if ((S.studio.project.questions || '').trim()) L.push(S.studio.project.questions.trim());
     L.push('');
   }
 
-  const works = S.studio.works || [];
+  const works = since ? [] : (S.studio.works || []);
   if (works.length) {
     L.push('## Bodies of work', '');
     works.forEach(w => {
@@ -8121,7 +8125,7 @@ function pageStudio() {
     });
   }
 
-  const claims = S.studio.claims || [];
+  const claims = since ? [] : (S.studio.claims || []);
   if (claims.length) {
     L.push('## Findings', '');
     const walk = (c, depth) => {
@@ -8135,8 +8139,9 @@ function pageStudio() {
     L.push('');
   }
 
-  const all = S.studio.entries.filter(e => !e.draft)
-    .slice().sort((a, b) => (a.date || '') > (b.date || '') ? -1 : 1);
+  const all = S.studio.entries.filter(e => !e.draft && fresh(e))
+    .slice().sort((a, b) => (a.date || '') === (b.date || '') ? 0
+      : ((a.date || '') > (b.date || '') ? -1 : 1));
   if (all.length) {
     L.push('## Sessions, newest first', '');
     all.forEach(e => {
@@ -8157,10 +8162,12 @@ function pageStudio() {
   return L.join('\n');
 }
 
-function pageJournal() {
-  const items = journalEntries().slice().sort((a, b) => a.date > b.date ? -1 : 1);
+function pageJournal(since) {
+  const items = journalEntries().filter(j => !since || j.date >= since)
+    .slice().sort((a, b) => a.date === b.date ? 0 : (a.date > b.date ? -1 : 1));
   if (!items.length) return '';
-  const L = ['# Journal, newest first', ''];
+  const L = [since ? '# Journal \u2014 added since ' + longDate(since)
+                   : '# Journal, newest first', ''];
   let lastDate = '';
   items.forEach(j => {
     if (j.date !== lastDate) { L.push('### ' + j.date); lastDate = j.date; }
@@ -8260,12 +8267,18 @@ function pagePractice() {
 
 /* ---- the set, chunked so no single note is unwieldy ---- */
 function siriPages() {
+  /* The small pages are current state: a dated snapshot on top of the last one
+     reads as a history and costs a few hundred bytes a time. The journal and
+     the studio sessions are cumulative and large, so those are sent as only
+     what is new \u2014 prepended, they rebuild the whole record without ever
+     repeating a word of it. */
+  const since = S.meta.lastPages || '';
   const raw = [
     ['Planner Summary', vaultSummary()],
     ['Planner Goals', pageGoals()],
     ['Planner Projects', pageProjects()],
-    ['Planner Studio', pageStudio()],
-    ['Planner Journal', pageJournal()],
+    ['Planner Studio', pageStudio(since)],
+    ['Planner Journal', pageJournal(since)],
     ['Planner Notes', pageNotes()],
     ['Planner Money', pageMoney()],
     ['Planner Practice', pagePractice()]
@@ -8325,7 +8338,12 @@ function sendPagesToNotes() {
   const a = E('a', { href: url });
   document.body.append(a); a.click(); a.remove();
   siriAt = next;
-  if (siriAt >= pages.length) { siriAt = 0; stampSummary(); toast('All sent'); }
+  if (siriAt >= pages.length) {
+    siriAt = 0;
+    S.meta.lastPages = iso(new Date());     /* next time, only what is new */
+    stampSummary();
+    toast('All sent');
+  }
   else toast(items.length + ' sent — tap again for the rest');
 }
 
