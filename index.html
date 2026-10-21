@@ -182,7 +182,7 @@ textarea::placeholder,input::placeholder{color:var(--faint)}
 <script>
 /* ===================== core ===================== */
 const KEY = 'goaldigger2026';
-/* BUILD_STAMP */ const BUILD = '2026-10-21.1420';
+/* BUILD_STAMP */ const BUILD = '2026-10-21.1435';
 const YEAR = 2026;                       /* the year this planner began */
 const CURRENT_YEAR = new Date().getFullYear();
 const MONTHS = ['January','February','March','April','May','June','July','August','September','October','November','December'];
@@ -3972,8 +3972,9 @@ function pageData() {
           E('div', { style: 'font-size:13.5px', text: a }),
           E('p', { cls: 'lede', style: 'margin:2px 0 0', text: b })]));
       });
-    hb.append(E('p', { cls: 'lede', style: 'margin-top:10px', text: 'The planner sends a list now, so one shortcut can fill every note. Change the Find step to look for the item\u2019s Name rather than a fixed title, wrap it all in a Repeat, and add an Otherwise branch that creates the note when there is none.' }));
-    hb.append(E('p', { cls: 'lede', text: 'Or describe it from scratch on iOS 27: \u201cFor each item in the list passed in, find a note whose name is the item\u2019s Name. If there is one, prepend the item\u2019s Text to it as Markdown. If there is not, make a new note from the item\u2019s Text.\u201d' }));
+    hb.append(E('p', { cls: 'lede', text: 'The planner sends a dictionary with the list under a key called pages \u2014 the same shape the reminders shortcut has always taken. Given a bare list Shortcuts has nothing to get hold of and the repeat quietly runs no times at all, which looks exactly like a broken shortcut.' }));
+    hb.append(E('p', { cls: 'lede', text: 'Four actions: Get Dictionary from Input, then Get Dictionary Value for pages, then Repeat with Each, and inside it find a note named after the item\u2019s Name \u2014 prepend the item\u2019s Text as Markdown if there is one, create a note from it if there is not.' }));
+    hb.append(E('p', { cls: 'lede', text: 'Or describe it: \u201cThe input is a dictionary with a key called pages holding a list. For each item in it, find a note whose name is the item\u2019s Name. If one exists, prepend the item\u2019s Text to it as Markdown. If not, create a new note from the item\u2019s Text.\u201d' }));
     hb.append(E('p', { cls: 'lede', text: 'Then ask Siri things like \u201cwhat does my planner summary say about this week\u201d or \u201cwhat am I waiting on\u201d. Each entry names the stretch it covers, so an older one further down reads as history rather than as now.' }));
 
     hb.append(E('h2', { style: 'margin-top:16px', text: 'The iCloud file' }));
@@ -7600,7 +7601,7 @@ function vaultSummary() {
    never answering from last month's figures. */
 function sendSummaryToNotes() {
   /* the same shape the whole set uses, so one shortcut serves both */
-  const payload = [{ name: 'Planner Summary', text: vaultSummary() }];
+  const payload = { pages: [{ name: 'Planner Summary', text: vaultSummary() }] };
   const url = 'shortcuts://run-shortcut?name=' +
     encodeURIComponent(S.cfg.noteShortcut || 'Planner Summary') +
     '&input=text&text=' + encodeURIComponent(JSON.stringify(payload));
@@ -8318,10 +8319,10 @@ function packPages(pages, startAt) {
   let i = startAt;
   while (i < pages.length) {
     const next = items.concat([pages[i]]);
-    if (encodeURIComponent(JSON.stringify(next)).length > URL_BUDGET && items.length) break;
+    if (encodeURIComponent(JSON.stringify({ pages: next })).length > URL_BUDGET && items.length) break;
     items.push(pages[i]);
     i++;
-    if (encodeURIComponent(JSON.stringify(items)).length > URL_BUDGET) break;
+    if (encodeURIComponent(JSON.stringify({ pages: items })).length > URL_BUDGET) break;
   }
   return { items, next: i };
 }
@@ -8332,9 +8333,13 @@ function sendPagesToNotes() {
   if (siriAt >= pages.length) siriAt = 0;
   const { items, next } = packPages(pages, siriAt);
   if (!items.length) { toast('That page is too long to send'); siriAt++; return; }
+  /* An object with the list under a named key, matching the shape the
+     reminders shortcut has always been handed. Shortcuts can take a
+     dictionary from input and pull a key out of it; given a bare array it
+     has nothing to get hold of, and the repeat silently runs zero times. */
   const url = 'shortcuts://run-shortcut?name=' +
     encodeURIComponent(S.cfg.noteShortcut || 'Planner Summary') +
-    '&input=text&text=' + encodeURIComponent(JSON.stringify(items));
+    '&input=text&text=' + encodeURIComponent(JSON.stringify({ pages: items }));
   const a = E('a', { href: url });
   document.body.append(a); a.click(); a.remove();
   siriAt = next;
