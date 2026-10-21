@@ -182,7 +182,7 @@ textarea::placeholder,input::placeholder{color:var(--faint)}
 <script>
 /* ===================== core ===================== */
 const KEY = 'goaldigger2026';
-/* BUILD_STAMP */ const BUILD = '2026-10-21.1240';
+/* BUILD_STAMP */ const BUILD = '2026-10-21.1330';
 const YEAR = 2026;                       /* the year this planner began */
 const CURRENT_YEAR = new Date().getFullYear();
 const MONTHS = ['January','February','March','April','May','June','July','August','September','October','November','December'];
@@ -3885,6 +3885,23 @@ function pageData() {
     E('button', { cls: 'btn', text: 'Copy instead', onclick: () => copySummary().then(render) })
   ]));
 
+  /* everything, not just the summary */
+  const pl2 = pagesLeft();
+  const everything = E('div', { style: 'margin-top:12px;padding-top:10px;border-top:1px solid var(--rule)' });
+  everything.append(E('div', { style: 'font-size:14.5px', text: 'Everything, not just the summary' }));
+  everything.append(E('p', { cls: 'lede', style: 'margin:2px 0 8px', text: 'Your goals, projects, studio sessions, findings, journal, notes, money and practice, each as its own note. Apple\u2019s index reads Notes reliably \u2014 whether it reaches files in iCloud Drive nobody has confirmed \u2014 so this is what lets Siri answer about more than the headline.' }));
+  everything.append(E('div', { cls: 'btnrow' }, [
+    E('button', { cls: 'btn' + (pl2.done ? ' fill' : ''),
+      text: pl2.done ? 'Send the rest (' + pl2.left + ' to go)' : 'Send everything',
+      onclick: () => { sendPagesToNotes(); setTimeout(render, 400); } }),
+    pl2.done ? E('button', { cls: 'btn', text: 'Start over',
+      onclick: () => { siriAt = 0; render(); } }) : null
+  ].filter(Boolean)));
+  everything.append(E('div', { cls: 'pct', style: 'margin-top:6px', text: pl2.done
+    ? pl2.done + ' of ' + pl2.total + ' pages sent'
+    : pl2.total + ' page' + (pl2.total === 1 ? '' : 's') + '. A URL will not carry them all at once, so it takes a tap or two.' }));
+  sc.append(everything);
+
   /* see it before sending it */
   if (!peekSummary) {
     sc.append(E('button', { cls: 'btn ghost', style: 'padding-left:0;font-size:12px',
@@ -3953,7 +3970,8 @@ function pageData() {
           E('div', { style: 'font-size:13.5px', text: a }),
           E('p', { cls: 'lede', style: 'margin:2px 0 0', text: b })]));
       });
-    hb.append(E('p', { cls: 'lede', style: 'margin-top:10px', text: 'On iOS 27 you can describe it instead: \u201cAdd the text passed in to the top of my note called Planner Summary.\u201d' }));
+    hb.append(E('p', { cls: 'lede', style: 'margin-top:10px', text: 'The planner sends a list now, so one shortcut can fill every note. Change the Find step to look for the item\u2019s Name rather than a fixed title, wrap it all in a Repeat, and add an Otherwise branch that creates the note when there is none.' }));
+    hb.append(E('p', { cls: 'lede', text: 'Or describe it from scratch on iOS 27: \u201cFor each item in the list passed in, find a note whose name is the item\u2019s Name. If there is one, prepend the item\u2019s Text to it as Markdown. If there is not, make a new note from the item\u2019s Text.\u201d' }));
     hb.append(E('p', { cls: 'lede', text: 'Then ask Siri things like \u201cwhat does my planner summary say about this week\u201d or \u201cwhat am I waiting on\u201d. Each entry names the stretch it covers, so an older one further down reads as history rather than as now.' }));
 
     hb.append(E('h2', { style: 'margin-top:16px', text: 'The iCloud file' }));
@@ -7435,10 +7453,16 @@ function vaultSummary() {
   if (done.length) s += ' ' + pl(done.length, 'goal') + ' ' + (done.length === 1 ? 'has' : 'have') + ' been completed.';
   L.push(s);
 
-  act.slice(0, 10).forEach(g => {
-    L.push('- ' + (g.title || 'Untitled goal') + ' is ' + goalProgress(g) + '% of the way there' +
+  /* a goal with no name yet is a stray, not something to report progress on —
+     worth a nudge rather than a bullet reading "Untitled goal is 0%" */
+  const named = act.filter(g => (g.title || '').trim());
+  const unnamed = act.length - named.length;
+  named.slice(0, 10).forEach(g => {
+    L.push('- ' + g.title.trim() + ' is ' + goalProgress(g) + '% of the way there' +
       (g.targetYear ? ', aimed at ' + g.targetYear : '') + '.');
   });
+  if (unnamed) L.push((unnamed === 1 ? 'One goal has' : unnamed + ' goals have') +
+    ' no title yet, so ' + (unnamed === 1 ? 'it is' : 'they are') + ' not listed above.');
   L.push('');
 
   if (paused.length) {
@@ -7573,10 +7597,11 @@ function vaultSummary() {
    in a file and hoping. The shortcut replaces the note each time, so Siri is
    never answering from last month's figures. */
 function sendSummaryToNotes() {
-  const text = vaultSummary();
+  /* the same shape the whole set uses, so one shortcut serves both */
+  const payload = [{ name: 'Planner Summary', text: vaultSummary() }];
   const url = 'shortcuts://run-shortcut?name=' +
     encodeURIComponent(S.cfg.noteShortcut || 'Planner Summary') +
-    '&input=text&text=' + encodeURIComponent(text);
+    '&input=text&text=' + encodeURIComponent(JSON.stringify(payload));
   const a = E('a', { href: url });
   document.body.append(a); a.click(); a.remove();
   stampSummary();
@@ -7991,6 +8016,323 @@ async function shareVaultZip(ready) {
 }
 
 const vaultSize = files => files.reduce((a, f) => a + f.bytes.length, 0);
+
+
+
+/* ===================== the whole planner, as pages Siri can read =====================
+   Apple's index reaches Notes reliably; whether it reaches files in iCloud
+   Drive is not something anyone has confirmed, so everything meant for Siri
+   goes into Notes rather than sitting in the vault folder hoping.
+
+   These are written as prose with plain headings, not as the vault's Markdown
+   with its frontmatter and [[links]] — those mean nothing in Notes and only
+   get in the way of a model reading for sense. */
+
+const PAGE_BUDGET = 34000;      /* characters per note before it is split */
+const URL_BUDGET  = 48000;      /* encoded characters per shortcut call */
+
+function pageGoals() {
+  if (!(S.goals || []).length) return '';
+  const L = ['# Goals', ''];
+  const line = (h, v) => { if ((v || '').trim()) L.push('**' + h + '** ' + v.trim()); };
+  const run = (list, heading) => {
+    if (!list.length) return;
+    L.push('## ' + heading, '');
+    list.forEach(g => {
+      L.push('### ' + (g.title || 'Untitled goal'));
+      L.push(goalProgress(g) + '% of the way there' +
+        (g.targetYear ? ', aimed at ' + g.targetYear : '') +
+        (g.horizon ? ', ' + g.horizon + '-term' : '') + '.');
+      if (isPaused(g)) L.push('Paused since ' + g.paused +
+        ((g.pauseWhy || '').trim() ? ' — ' + g.pauseWhy.trim() : '') +
+        (g.until ? ', expected back ' + g.until : '') + '.');
+      line('What:', g.what); line('Why:', g.why); line('How:', g.how);
+      line('When:', g.when); line('Reward:', g.reward); line('The feeling I am after:', g.feeling);
+      const parents = (g.parents || []).map(p => (S.goals.find(x => x.id === p) || {}).title).filter(Boolean);
+      if (parents.length) L.push('**In service of:** ' + parents.join(', '));
+      const ms = (g.milestones || []).filter(m => (m.t || '').trim());
+      if (ms.length) {
+        L.push('', 'Milestones:');
+        ms.forEach(m => {
+          L.push('- ' + (m.d ? 'Done: ' : 'Still open: ') + m.t +
+            (m.due ? ' (due ' + m.due + ')' : '') +
+            (m.watch && !m.d ? ' — waiting on news about this one' : ''));
+          (m.kt || []).filter(k => (k.t || '').trim())
+            .forEach(k => L.push('    - ' + (k.d ? 'done: ' : 'open: ') + k.t));
+        });
+      }
+      const ps = (S.projects || []).filter(p => (p.goals || []).includes(g.id));
+      if (ps.length) {
+        L.push('', 'Projects serving it:');
+        ps.forEach(p => L.push('- ' + (p.title || 'Untitled') + ', ' + projectProgress(p) + '% done' +
+          (p.due ? ', due ' + p.due : '') + (p.done ? ' (finished)' : '')));
+      }
+      L.push('');
+    });
+  };
+  run(activeGoals(), 'Active');
+  run(pausedGoals(), 'Paused');
+  run((S.goals || []).filter(g => g.completed), 'Completed');
+  return L.join('\n');
+}
+
+function pageProjects() {
+  const ps = S.projects || [];
+  if (!ps.length) return '';
+  const L = ['# Projects', ''];
+  ps.slice().sort((a, b) => (a.due || '9999') < (b.due || '9999') ? -1 : 1).forEach(p => {
+    L.push('### ' + (p.title || 'Untitled project'));
+    L.push(projectProgress(p) + '% done' + (p.due ? ', due ' + p.due : '') +
+      (p.done ? ', finished ' + p.done : '') + '.');
+    const gs = (p.goals || []).map(id => (S.goals.find(g => g.id === id) || {}).title).filter(Boolean);
+    if (gs.length) L.push('In service of: ' + gs.join(', ') + '.');
+    if ((p.notes || '').trim()) L.push(p.notes.trim());
+    const own = (p.tasks || []).filter(t => (t.t || '').trim());
+    if (own.length) {
+      L.push('', 'Tasks:');
+      own.forEach(t => L.push('- ' + (t.d ? 'done: ' : 'open: ') + t.t +
+        (t.cost ? ' (' + money(num(t.cost)) + ')' : '')));
+    }
+    if (num(p.budget)) L.push('', 'Budget ' + money(num(p.budget)) +
+      ', committed ' + money(projectSpent(p)) + '.');
+    L.push('');
+  });
+  return L.join('\n');
+}
+
+function pageStudio() {
+  const refl = reflections(), lg = logs();
+  if (!refl.length && !lg.length && !(S.studio.works || []).length) return '';
+  const L = ['# Studio', ''];
+  if ((S.studio.project || {}).title) {
+    L.push('The project: ' + S.studio.project.title);
+    if ((S.studio.project.questions || '').trim()) L.push(S.studio.project.questions.trim());
+    L.push('');
+  }
+
+  const works = S.studio.works || [];
+  if (works.length) {
+    L.push('## Bodies of work', '');
+    works.forEach(w => {
+      L.push('### ' + (w.title || 'Untitled work'));
+      if (w.period || w.media) L.push([w.period, w.media].filter(Boolean).join(', ') + '.');
+      if ((w.statement || '').trim()) L.push(w.statement.trim());
+      L.push('');
+    });
+  }
+
+  const claims = S.studio.claims || [];
+  if (claims.length) {
+    L.push('## Findings', '');
+    const walk = (c, depth) => {
+      const w = workOf(claimWork(c));
+      L.push('  '.repeat(depth) + '- ' + (c.text || 'Untitled finding').trim() +
+        (w && w.title ? ' (' + w.title + ')' : ''));
+      if ((c.notes || '').trim()) L.push('  '.repeat(depth + 1) + c.notes.trim());
+      childClaims(c.id).forEach(k => walk(k, depth + 1));
+    };
+    topClaims().forEach(c => walk(c, 0));
+    L.push('');
+  }
+
+  const all = S.studio.entries.filter(e => !e.draft)
+    .slice().sort((a, b) => (a.date || '') > (b.date || '') ? -1 : 1);
+  if (all.length) {
+    L.push('## Sessions, newest first', '');
+    all.forEach(e => {
+      const w = workOf(e.work);
+      L.push('### ' + (e.date || '') + ' — ' + (e.title || (isLog(e) ? 'Studio note' : 'Reflection')));
+      if (w && w.title) L.push('Work: ' + w.title + '.');
+      if (e.key) L.push('Marked as evidence.');
+      if ((e.claim || '').trim()) L.push('Claim: ' + e.claim.trim());
+      const sec = (h, v) => { if ((v || '').trim()) L.push(h + ': ' + v.trim()); };
+      sec('What I did', e.did);
+      sec('In action', e.inAction);
+      sec('On action', e.onAction);
+      sec('For action', e.forAction);
+      if ((e.themes || []).length) L.push('Threads: ' + e.themes.join(', ') + '.');
+      L.push('');
+    });
+  }
+  return L.join('\n');
+}
+
+function pageJournal() {
+  const items = journalEntries().slice().sort((a, b) => a.date > b.date ? -1 : 1);
+  if (!items.length) return '';
+  const L = ['# Journal, newest first', ''];
+  let lastDate = '';
+  items.forEach(j => {
+    if (j.date !== lastDate) { L.push('### ' + j.date); lastDate = j.date; }
+    const d = S.days[j.date] || {};
+    if ((d.intent || '').trim() && j === items.find(x => x.date === j.date)) {
+      L.push('Intention: ' + d.intent.trim());
+    }
+    if ((j.body || '').trim()) L.push(j.body.trim());
+    if ((j.obj.themes || []).length) L.push('Threads: ' + j.obj.themes.join(', ') + '.');
+    L.push('');
+  });
+  return L.join('\n');
+}
+
+function pageNotes() {
+  const ns = S.notes || [];
+  if (!ns.length) return '';
+  const L = ['# Notes', ''];
+  ns.forEach(n => {
+    L.push('### ' + (n.title || 'Untitled note') + (n.date ? ' — ' + n.date : ''));
+    if ((n.body || '').trim()) L.push(n.body.trim());
+    if ((n.themes || []).length) L.push('Threads: ' + n.themes.join(', ') + '.');
+    (n.links || []).forEach(l => L.push('Source: ' + (l.label || l.url) + ' — ' + l.url));
+    L.push('');
+  });
+  return L.join('\n');
+}
+
+function pageMoney() {
+  const F = finance();
+  if (!(F.flows || []).length && !(F.assets || []).length && !(F.liabs || []).length) return '';
+  const L = ['# Money', ''];
+  const mk = thisMonth();
+  L.push('In ' + monthName(mk) + ': ' + money(monthlyOf(F.flows, 'in', mk)) + ' in, ' +
+    money(monthlyOf(F.flows, 'out', mk)) + ' out, leaving ' +
+    money(monthlyOf(F.flows, 'in', mk) - monthlyOf(F.flows, 'out', mk)) + '.', '');
+  ['in', 'out'].forEach(k => {
+    const rows = (F.flows || []).filter(x => x.k === k && (x.n || '').trim());
+    if (!rows.length) return;
+    L.push('## ' + (k === 'in' ? 'Coming in' : 'Going out'), '');
+    rows.forEach(x => L.push('- ' + x.n + ': ' + money(num(x.v)) + ' ' + freqName(x.f) +
+      (x.from ? ', from ' + monthName(x.from) : '') +
+      (x.to ? ', until ' + monthName(x.to) : '') + '.'));
+    L.push('');
+  });
+  const yr = new Date().getFullYear(), rows = yearFlow(yr);
+  L.push('## Across ' + yr, '');
+  L.push('Counting each line only for the months it runs: ' +
+    money(rows.reduce((a, r) => a + r.in, 0)) + ' in, ' +
+    money(rows.reduce((a, r) => a + r.out, 0)) + ' out.', '');
+  rows.forEach(r => L.push('- ' + monthName(r.mk) + ': ' + money(r.in) + ' in, ' +
+    money(r.out) + ' out, ' + money(r.in - r.out) + ' left.'));
+  L.push('');
+  if ((F.assets || []).length || (F.liabs || []).length) {
+    L.push('## What I own and owe', '');
+    (F.assets || []).filter(x => (x.n || '').trim())
+      .forEach(x => L.push('- ' + x.n + ': ' + money(num(x.v))));
+    (F.liabs || []).filter(x => (x.n || '').trim())
+      .forEach(x => L.push('- owed, ' + x.n + ': ' + money(num(x.v))));
+    L.push('', 'Net worth sits near ' + money(sumOf(F.assets || []) - sumOf(F.liabs || [])) + '.', '');
+  }
+  return L.join('\n');
+}
+
+function pagePractice() {
+  const days = Object.keys((S.limbs || {}).days || {}).filter(k =>
+    Object.keys((S.limbs.days[k] || {}).marks || {}).length).sort().reverse();
+  if (!days.length) return '';
+  const L = ['# The eight limbs', ''];
+  L.push('Practised on ' + days.length + ' days in all. The current run is ' +
+    limbStreak() + ' days.', '');
+  const tally = {};
+  days.forEach(k => Object.keys(S.limbs.days[k].marks || {}).forEach(pid => {
+    tally[pid] = tally[pid] || { up: 0, slip: 0 };
+    tally[pid][S.limbs.days[k].marks[pid]] = (tally[pid][S.limbs.days[k].marks[pid]] || 0) + 1;
+  }));
+  LIMBS.forEach(limb => {
+    const rows = (limb.practices || []).filter(p => tally[p.id]);
+    if (!rows.length) return;
+    L.push('## ' + limb.sanskrit + ' — ' + limb.english, '');
+    rows.forEach(p => L.push('- ' + p.name + ': kept ' + (tally[p.id].up || 0) +
+      ' times, slipped ' + (tally[p.id].slip || 0) + '.'));
+    L.push('');
+  });
+  L.push('## Recent days', '');
+  days.slice(0, 40).forEach(k => {
+    const marks = S.limbs.days[k].marks || {};
+    const names = Object.keys(marks).map(pid => {
+      let nm = pid;
+      LIMBS.forEach(l => (l.practices || []).forEach(p => { if (p.id === pid) nm = p.name; }));
+      return nm + ' (' + marks[pid] + ')';
+    });
+    L.push('- ' + k + ': ' + names.join(', '));
+  });
+  return L.join('\n');
+}
+
+/* ---- the set, chunked so no single note is unwieldy ---- */
+function siriPages() {
+  const raw = [
+    ['Planner Summary', vaultSummary()],
+    ['Planner Goals', pageGoals()],
+    ['Planner Projects', pageProjects()],
+    ['Planner Studio', pageStudio()],
+    ['Planner Journal', pageJournal()],
+    ['Planner Notes', pageNotes()],
+    ['Planner Money', pageMoney()],
+    ['Planner Practice', pagePractice()]
+  ].filter(([, text]) => {
+    /* a lone heading with nothing under it is not worth a note */
+    const body = String(text || '').split('\n').filter(l => l.trim() && !/^#/.test(l.trim()));
+    return body.length > 0;
+  });
+
+  const out = [];
+  raw.forEach(([name, text]) => {
+    if (text.length <= PAGE_BUDGET) { out.push({ name, text }); return; }
+    /* split on section breaks so a note never stops mid-sentence */
+    const parts = text.split(/\n(?=### )/);
+    let buf = '', n = 1;
+    const flush = () => {
+      if (!buf.trim()) return;
+      out.push({ name: name + ' ' + n, text: (n > 1 ? '# ' + name + ', part ' + n + '\n\n' : '') + buf.trim() });
+      n++; buf = '';
+    };
+    parts.forEach(p => {
+      if (buf.length + p.length > PAGE_BUDGET) flush();
+      buf += (buf ? '\n' : '') + p;
+    });
+    flush();
+  });
+  return out;
+}
+
+/* ---- sending them, a batch per tap ----
+   Everything leaves through a URL, and a URL will not carry the whole lot, so
+   the pages go in batches and the card says how many taps are left. */
+let siriAt = 0;
+
+function packPages(pages, startAt) {
+  const items = [];
+  let i = startAt;
+  while (i < pages.length) {
+    const next = items.concat([pages[i]]);
+    if (encodeURIComponent(JSON.stringify(next)).length > URL_BUDGET && items.length) break;
+    items.push(pages[i]);
+    i++;
+    if (encodeURIComponent(JSON.stringify(items)).length > URL_BUDGET) break;
+  }
+  return { items, next: i };
+}
+
+function sendPagesToNotes() {
+  const pages = siriPages();
+  if (!pages.length) { toast('Nothing to send yet'); return; }
+  if (siriAt >= pages.length) siriAt = 0;
+  const { items, next } = packPages(pages, siriAt);
+  if (!items.length) { toast('That page is too long to send'); siriAt++; return; }
+  const url = 'shortcuts://run-shortcut?name=' +
+    encodeURIComponent(S.cfg.noteShortcut || 'Planner Summary') +
+    '&input=text&text=' + encodeURIComponent(JSON.stringify(items));
+  const a = E('a', { href: url });
+  document.body.append(a); a.click(); a.remove();
+  siriAt = next;
+  if (siriAt >= pages.length) { siriAt = 0; stampSummary(); toast('All sent'); }
+  else toast(items.length + ' sent — tap again for the rest');
+}
+
+const pagesLeft = () => {
+  const n = siriPages().length;
+  return { total: n, done: Math.min(siriAt, n), left: Math.max(0, n - siriAt) };
+};
 
 
 /* ===================== boot ===================== */
