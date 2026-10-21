@@ -182,7 +182,7 @@ textarea::placeholder,input::placeholder{color:var(--faint)}
 <script>
 /* ===================== core ===================== */
 const KEY = 'goaldigger2026';
-/* BUILD_STAMP */ const BUILD = '2026-10-21.1230';
+/* BUILD_STAMP */ const BUILD = '2026-10-21.1240';
 const YEAR = 2026;                       /* the year this planner began */
 const CURRENT_YEAR = new Date().getFullYear();
 const MONTHS = ['January','February','March','April','May','June','July','August','September','October','November','December'];
@@ -3943,17 +3943,18 @@ function pageData() {
       text: 'How to build that shortcut', onclick: () => { showNoteHelp = true; render(); } }));
   } else {
     const hb = E('div', { style: 'margin-top:8px' });
-    hb.append(E('p', { cls: 'lede', text: 'In Shortcuts, make a new shortcut called Planner Summary with three actions:' }));
-    [['1. Find Notes', 'where Name is “Planner Summary”'],
-     ['2. Delete Notes', 'pass it the found notes, and turn on Allow Deleting Without Confirmation — otherwise it stops and asks every time'],
-     ['3. Create Note', 'body set to Shortcut Input, title left to the first line']]
+    hb.append(E('p', { cls: 'lede', text: 'Nothing here deletes anything. The summary is added to the top of one note, so the note becomes a dated log and the newest is what Siri reads first.' }));
+    hb.append(E('p', { cls: 'lede', text: 'Try it on a throwaway name before pointing it at the real one. Make a note called Planner Test, build the shortcut against that, send one, and look at what lands. Rename both when you are happy.' }));
+    [['1. Make the note by hand, once', 'In Notes, a new note whose first line is Planner Summary. Appending needs something to append to.'],
+     ['2. One action: Append Text to Note', 'the note set to that one, the text set to Shortcut Input, and the position set to the top so the newest sits first'],
+     ['3. Name the shortcut', 'Planner Summary, or anything you like as long as it matches the field above']]
       .forEach(([a, b]) => {
         hb.append(E('div', { style: 'padding:6px 0;border-top:1px solid var(--rule)' }, [
           E('div', { style: 'font-size:13.5px', text: a }),
           E('p', { cls: 'lede', style: 'margin:2px 0 0', text: b })]));
       });
-    hb.append(E('p', { cls: 'lede', style: 'margin-top:10px', text: 'On iOS 27 you can skip all that and describe it instead: “Delete any note called Planner Summary, then make a new note from the text passed in.”' }));
-    hb.append(E('p', { cls: 'lede', text: 'Then ask Siri things like “what does my planner summary say about this week” or “what am I waiting on”.' }));
+    hb.append(E('p', { cls: 'lede', style: 'margin-top:10px', text: 'On iOS 27 you can describe it instead: \u201cAdd the text passed in to the top of my note called Planner Summary.\u201d' }));
+    hb.append(E('p', { cls: 'lede', text: 'Then ask Siri things like \u201cwhat does my planner summary say about this week\u201d or \u201cwhat am I waiting on\u201d. Each entry names the stretch it covers, so an older one further down reads as history rather than as now.' }));
 
     hb.append(E('h2', { style: 'margin-top:16px', text: 'The iCloud file' }));
     hb.append(E('p', { cls: 'lede', text: 'A second shortcut, Save Planner File, writes the summary into iCloud Drive with no zip and no save sheet. Two actions:' }));
@@ -7394,7 +7395,10 @@ function vaultSummary() {
     : W.since === tIso ? 'so far today'
     : 'since ' + longDate(W.since) + ', ' + pl(W.days, 'day') + ' ago';
 
-  L.push('# Planner summary', '');
+  /* these stack up in one note now, so each is headed by its own date and says
+     plainly which stretch it covers — an older entry further down then reads
+     as history rather than as the current state */
+  L.push('# Planner summary — ' + dateLong, '');
   L.push('This is a plain-English summary of Tony’s planner, written on ' + dateLong + '.');
   L.push(W.since
     ? 'The counts below cover what has happened ' + spell + ', which is when the last summary was taken.'
