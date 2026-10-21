@@ -182,7 +182,7 @@ textarea::placeholder,input::placeholder{color:var(--faint)}
 <script>
 /* ===================== core ===================== */
 const KEY = 'goaldigger2026';
-/* BUILD_STAMP */ const BUILD = '2026-10-21.1435';
+/* BUILD_STAMP */ const BUILD = '2026-10-21.1445';
 const YEAR = 2026;                       /* the year this planner began */
 const CURRENT_YEAR = new Date().getFullYear();
 const MONTHS = ['January','February','March','April','May','June','July','August','September','October','November','December'];
@@ -4005,6 +4005,26 @@ function pageData() {
     sc.append(hb);
   }
 
+  /* ---------- nothing happening? ---------- */
+  const F2 = payloadFacts();
+  const diag = E('div', { style: 'margin-top:12px;padding-top:10px;border-top:1px solid var(--rule)' });
+  diag.append(E('div', { style: 'font-size:14.5px', text: 'Nothing happening?' }));
+  diag.append(E('p', { cls: 'lede', style: 'margin:2px 0 8px', text: 'Two apps and no error message between them, so work out which half is failing before changing anything. Check the build first \u2014 an old copy on the phone sends a different shape and no shortcut on earth will read it.' }));
+  diag.append(E('div', { cls: 'pct', text: 'This copy is build ' + F2.build }));
+  diag.append(E('div', { cls: 'pct', text: 'It will call a shortcut named \u201c' + F2.shortcut + '\u201d' }));
+  diag.append(E('div', { cls: 'pct', text: 'Next tap sends ' + F2.pages + ' page' + (F2.pages === 1 ? '' : 's') +
+    ' (' + F2.names.join(', ') + '), a URL of ' + F2.urlLength + ' characters' }));
+  diag.append(E('div', { cls: 'btnrow', style: 'margin-top:8px' }, [
+    E('button', { cls: 'btn', text: 'Copy the payload', onclick: () => copyPayload() }),
+    E('button', { cls: 'btn', text: showPayload ? 'Hide it' : 'Show it',
+      onclick: () => { showPayload = !showPayload; render(); } })
+  ]));
+  if (showPayload) diag.append(E('pre', { style: 'white-space:pre-wrap;word-break:break-all;font-size:10.5px;line-height:1.45;margin:8px 0 0;padding:10px;background:var(--sunk,rgba(128,128,128,.08));border-radius:8px;max-height:260px;overflow:auto',
+    text: currentPayload().slice(0, 4000) }));
+  diag.append(E('p', { cls: 'lede', style: 'margin-top:8px', text: 'With that copied, open Shortcuts and test the shortcut on its own: put a Text action at the very top, paste into it, and point the first step at that Text instead of Shortcut Input. Run it there and every action shows its result, so whichever one comes back empty is the one at fault. Put Shortcut Input back when it works.' }));
+  sc.append(diag);
+
+
   if (S.meta.lastSummary) {
     const sAge = Math.round((new Date() - parseIso(S.meta.lastSummary)) / 86400000);
     sc.append(E('div', { cls: 'pct', style: 'margin-top:10px',
@@ -7168,7 +7188,7 @@ function splitFlow(arr, i, fromMk) {
 
 /* the gathered folder, waiting for a fresh tap to save it */
 let vaultReady = null;
-let peekSummary = false, showNoteHelp = false, summaryHushed = false;
+let peekSummary = false, showNoteHelp = false, summaryHushed = false, showPayload = false;
 
 /* ---------- zip, stored entries, no dependencies ---------- */
 let _crcTable = null;
@@ -8356,6 +8376,37 @@ const pagesLeft = () => {
   const n = siriPages().length;
   return { total: n, done: Math.min(siriAt, n), left: Math.max(0, n - siriAt) };
 };
+
+
+/* ---------- when nothing happens ----------
+   Two apps, no error message, and a silent failure in either one looks
+   identical from the outside. These put the exact payload somewhere you can
+   inspect, so the shortcut can be run on its own in Shortcuts with the
+   planner taken out of the question entirely. */
+function currentPayload() {
+  const pages = siriPages();
+  const { items } = packPages(pages, siriAt >= pages.length ? 0 : siriAt);
+  return JSON.stringify({ pages: items }, null, 1);
+}
+async function copyPayload() {
+  const t = currentPayload();
+  try { await navigator.clipboard.writeText(t); toast('Copied \u2014 ' + t.length + ' characters'); }
+  catch (e) { toast('Could not copy'); }
+}
+function payloadFacts() {
+  const pages = siriPages();
+  const { items } = packPages(pages, siriAt >= pages.length ? 0 : siriAt);
+  const url = 'shortcuts://run-shortcut?name=' +
+    encodeURIComponent(S.cfg.noteShortcut || 'Planner Summary') +
+    '&input=text&text=' + encodeURIComponent(JSON.stringify({ pages: items }));
+  return {
+    build: BUILD,
+    shortcut: S.cfg.noteShortcut || 'Planner Summary',
+    pages: items.length,
+    names: items.map(i => i.name),
+    urlLength: url.length
+  };
+}
 
 
 /* ===================== boot ===================== */
