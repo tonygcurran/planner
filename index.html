@@ -182,7 +182,7 @@ textarea::placeholder,input::placeholder{color:var(--faint)}
 <script>
 /* ===================== core ===================== */
 const KEY = 'goaldigger2026';
-/* BUILD_STAMP */ const BUILD = '2026-10-21.1445';
+/* BUILD_STAMP */ const BUILD = '2026-10-21.1525';
 const YEAR = 2026;                       /* the year this planner began */
 const CURRENT_YEAR = new Date().getFullYear();
 const MONTHS = ['January','February','March','April','May','June','July','August','September','October','November','December'];
@@ -3897,7 +3897,7 @@ function pageData() {
       text: pl2.done ? 'Send the rest (' + pl2.left + ' to go)' : 'Send everything',
       onclick: () => { sendPagesToNotes(); setTimeout(render, 400); } }),
     pl2.done ? E('button', { cls: 'btn', text: 'Start over',
-      onclick: () => { siriAt = 0; render(); } }) : null
+      onclick: () => { setCursor(0); render(); } }) : null
   ].filter(Boolean)));
   everything.append(E('div', { cls: 'pct', style: 'margin-top:6px', text: pl2.done
     ? pl2.done + ' of ' + pl2.total + ' pages sent'
@@ -3972,9 +3972,9 @@ function pageData() {
           E('div', { style: 'font-size:13.5px', text: a }),
           E('p', { cls: 'lede', style: 'margin:2px 0 0', text: b })]));
       });
-    hb.append(E('p', { cls: 'lede', text: 'The planner sends a dictionary with the list under a key called pages \u2014 the same shape the reminders shortcut has always taken. Given a bare list Shortcuts has nothing to get hold of and the repeat quietly runs no times at all, which looks exactly like a broken shortcut.' }));
-    hb.append(E('p', { cls: 'lede', text: 'Four actions: Get Dictionary from Input, then Get Dictionary Value for pages, then Repeat with Each, and inside it find a note named after the item\u2019s Name \u2014 prepend the item\u2019s Text as Markdown if there is one, create a note from it if there is not.' }));
-    hb.append(E('p', { cls: 'lede', text: 'Or describe it: \u201cThe input is a dictionary with a key called pages holding a list. For each item in it, find a note whose name is the item\u2019s Name. If one exists, prepend the item\u2019s Text to it as Markdown. If not, create a new note from the item\u2019s Text.\u201d' }));
+    hb.append(E('p', { cls: 'lede', text: 'The keys are lower case: the dictionary has pages, and each item inside has name and text. Shortcuts matches keys exactly, so Name or Text finds nothing and fails without saying so.' }));
+    hb.append(E('p', { cls: 'lede', text: 'Four actions: Get Dictionary from Input, then Get Dictionary Value for pages, then Repeat with Each. Inside the repeat, Find Notes where Name is the item\u2019s name \u2014 is, never contains, because an empty value with contains matches every note you own and writes to whichever comes first. Then prepend the item\u2019s text as Markdown, or create a note from it when none is found.' }));
+    hb.append(E('p', { cls: 'lede', text: 'Or describe it: \u201cThe input is a dictionary with a key called pages holding a list. For each item, find a note whose name is exactly the item\u2019s lower-case name value. If one exists, prepend the item\u2019s lower-case text value to it as Markdown. If not, create a new note from that text.\u201d' }));
     hb.append(E('p', { cls: 'lede', text: 'Then ask Siri things like \u201cwhat does my planner summary say about this week\u201d or \u201cwhat am I waiting on\u201d. Each entry names the stretch it covers, so an older one further down reads as history rather than as now.' }));
 
     hb.append(E('h2', { style: 'margin-top:16px', text: 'The iCloud file' }));
@@ -8332,7 +8332,12 @@ function siriPages() {
 /* ---- sending them, a batch per tap ----
    Everything leaves through a URL, and a URL will not carry the whole lot, so
    the pages go in batches and the card says how many taps are left. */
-let siriAt = 0;
+/* How far through the set we are. This has to survive the trip out to
+   Shortcuts and back: that navigation can reload the page, and a counter
+   held in memory comes back as zero, so the same first batch gets sent over
+   and over and the later pages are never reached. */
+const siriCursor = () => Math.max(0, parseInt(S.meta.siriAt, 10) || 0);
+const setCursor = n => { S.meta.siriAt = n; save(true); };
 
 function packPages(pages, startAt) {
   const items = [];
@@ -8350,9 +8355,10 @@ function packPages(pages, startAt) {
 function sendPagesToNotes() {
   const pages = siriPages();
   if (!pages.length) { toast('Nothing to send yet'); return; }
-  if (siriAt >= pages.length) siriAt = 0;
-  const { items, next } = packPages(pages, siriAt);
-  if (!items.length) { toast('That page is too long to send'); siriAt++; return; }
+  let at = siriCursor();
+  if (at >= pages.length) at = 0;
+  const { items, next } = packPages(pages, at);
+  if (!items.length) { toast('That page is too long to send'); setCursor(at + 1); return; }
   /* An object with the list under a named key, matching the shape the
      reminders shortcut has always been handed. Shortcuts can take a
      dictionary from input and pull a key out of it; given a bare array it
@@ -8362,19 +8368,20 @@ function sendPagesToNotes() {
     '&input=text&text=' + encodeURIComponent(JSON.stringify({ pages: items }));
   const a = E('a', { href: url });
   document.body.append(a); a.click(); a.remove();
-  siriAt = next;
-  if (siriAt >= pages.length) {
-    siriAt = 0;
+  if (next >= pages.length) {
+    setCursor(0);
     S.meta.lastPages = iso(new Date());     /* next time, only what is new */
     stampSummary();
     toast('All sent');
+  } else {
+    setCursor(next);
+    toast(items.length + ' sent \u2014 tap again for the rest');
   }
-  else toast(items.length + ' sent — tap again for the rest');
 }
 
 const pagesLeft = () => {
-  const n = siriPages().length;
-  return { total: n, done: Math.min(siriAt, n), left: Math.max(0, n - siriAt) };
+  const n = siriPages().length, at = siriCursor();
+  return { total: n, done: Math.min(at, n), left: Math.max(0, n - at) };
 };
 
 
@@ -8385,7 +8392,8 @@ const pagesLeft = () => {
    planner taken out of the question entirely. */
 function currentPayload() {
   const pages = siriPages();
-  const { items } = packPages(pages, siriAt >= pages.length ? 0 : siriAt);
+  const cur = siriCursor();
+  const { items } = packPages(pages, cur >= pages.length ? 0 : cur);
   return JSON.stringify({ pages: items }, null, 1);
 }
 async function copyPayload() {
@@ -8395,7 +8403,8 @@ async function copyPayload() {
 }
 function payloadFacts() {
   const pages = siriPages();
-  const { items } = packPages(pages, siriAt >= pages.length ? 0 : siriAt);
+  const cur = siriCursor();
+  const { items } = packPages(pages, cur >= pages.length ? 0 : cur);
   const url = 'shortcuts://run-shortcut?name=' +
     encodeURIComponent(S.cfg.noteShortcut || 'Planner Summary') +
     '&input=text&text=' + encodeURIComponent(JSON.stringify({ pages: items }));
